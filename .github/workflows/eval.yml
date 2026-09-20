@@ -27,6 +27,7 @@ on:
 jobs:
   evaluate:
     name: Evaluate search quality
+    if: github.repository == 'arabold/docs-mcp-server'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:

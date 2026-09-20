@@ -24,14 +24,6 @@ COPY package*.json ./
 # Install all dependencies (including dev dependencies for building)
 RUN npm ci
 
-# Drop the musl-linked native builds. npm selects platform packages by `os`
-# and `cpu`; it only filters on `libc` when the lockfile records that field,
-# which npm 10 does not write. Both the glibc and musl variants therefore get
-# installed, and on this Debian base the musl ones can never load. Pruning
-# them keeps ~190 MB of dead binaries (over half of it `@xberg-io/xberg`)
-# out of the runtime image.
-RUN find node_modules -maxdepth 3 -type d -name '*-linux-*-musl' -prune -exec rm -rf {} +
-
 # Copy source code
 COPY . .
 
@@ -40,6 +32,15 @@ RUN npm run build
 
 # Remove build-only packages before copying dependencies into the runtime image.
 RUN npm prune --omit=dev --ignore-scripts
+
+# Drop the musl-linked native builds. npm selects platform packages by `os`
+# and `cpu`; it only filters on `libc` when the lockfile records that field,
+# which npm 10 does not write. Both the glibc and musl variants therefore get
+# installed, and on this Debian base the musl ones can never load. Run this
+# after npm prune because prune can restore optional packages from the lockfile.
+# Removing them keeps ~190 MB of dead binaries (over half of it `@xberg-io/xberg`)
+# out of the runtime image.
+RUN find node_modules -maxdepth 3 -type d -name '*-linux-*-musl' -prune -exec rm -rf {} +
 
 # Production stage
 FROM base AS production
