@@ -805,17 +805,19 @@ export class DocumentStore {
       this.embeddings ??= this.createEmbeddingClient(this.dbDimension);
       const dimension =
         this.probedDimension ?? (await this.detectEmbeddingDimension(this.embeddings));
-      const nativeDimension = this.modelDimension ?? this.dbDimension;
+      // Stored metadata records storage width, which can include padding. An
+      // unknown model's native width must be recovered from this live probe.
+      const nativeDimension = this.modelDimension ?? dimension;
       const expectedDimension =
-        this.embeddings instanceof FixedDimensionEmbeddings &&
-        this.embeddings.allowTruncate
-          ? Math.min(nativeDimension, this.dbDimension)
+        this.embeddings instanceof FixedDimensionEmbeddings
+          ? this.dbDimension
           : nativeDimension;
       if (dimension !== expectedDimension || dimension > this.dbDimension) {
         throw new StoreError(
           `Embedding probe dimension ${dimension} does not match expected dimension ${expectedDimension} within database dimension ${this.dbDimension}`,
         );
       }
+      this.modelDimension ??= dimension;
     } catch (error) {
       throw new StoreError("Required embedding readiness probe failed", error);
     }
@@ -843,7 +845,7 @@ export class DocumentStore {
         if (!isVectorDimensionExplicit(this.config)) {
           this.dbDimension = storedDimension;
         }
-        this.modelDimension = config.dimensions ?? this.dbDimension;
+        this.modelDimension = config.dimensions;
         logger.debug(
           `Vector dimension loaded from metadata: ${this.dbDimension} for ${config.provider}:${config.model}`,
         );
