@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { CancellationError } from "../../pipeline/errors";
 import type { ProgressCallback } from "../../types";
 import { type AppConfig, loadConfig } from "../../utils/config";
 import { logger } from "../../utils/logger";
@@ -1418,6 +1419,278 @@ describe("WebScraperStrategy", () => {
       expect(docCall).toBeDefined();
       expect(docCall![0].result?.textContent).toContain("This stays plain text.");
       expect(docCall![0].result?.contentType).toBe("text/plain");
+    });
+  });
+
+  describe("content-negotiated Markdown navigation discovery", () => {
+    const processItem = (
+      scraper: WebScraperStrategy,
+      item: QueueItem,
+      scrapeOptions: ScraperOptions,
+      signal?: AbortSignal,
+    ): Promise<ProcessItemResult> =>
+      (
+        scraper as unknown as {
+          processItem(
+            queueItem: QueueItem,
+            options: ScraperOptions,
+            abortSignal?: AbortSignal,
+          ): Promise<ProcessItemResult>;
+        }
+      ).processItem(item, scrapeOptions, signal);
+
+    it("preserves negotiated Markdown while discovering in-scope HTML navigation", async () => {
+      const testUrl = "https://example.com/docs/";
+      options.url = testUrl;
+      options.scope = "subpages";
+      const markdown =
+        '# Guide\n\n```python\nscheduler_events = {"daily": ["app.tasks.run"]}\n```';
+      const html =
+        '<html><body><nav><a href="/docs/child">Child</a><a href="/outside">Outside</a></nav><main><pre>12345 contaminated code</pre></main></body></html>';
+
+      mockFetchFn.mockImplementation(async (url: string, fetchOptions) => {
+        if (fetchOptions?.headers?.Accept === "text/html") {
+          return {
+            content: html,
+            mimeType: "text/html",
+            source: url,
+            status: FetchStatus.SUCCESS,
+          };
+        }
+        return {
+          content: markdown,
+          mimeType: "text/markdown",
+          source: url,
+          status: FetchStatus.SUCCESS,
+        };
+      });
+
+      const result = await processItem(strategy, { url: testUrl, depth: 0 }, options);
+
+      expect(result.content?.textContent).toContain("scheduler_events =");
+      expect(result.content?.textContent).not.toContain("12345 contaminated");
+      expect(result.links).toContain("https://example.com/docs/child");
+      expect(result.links).not.toContain("https://example.com/outside");
+    });
+
+    it("merges Markdown links with additional HTML navigation without duplicates", async () => {
+      const testUrl = "https://example.com/docs/";
+      options.url = testUrl;
+      mockFetchFn.mockImplementation(async (url: string, fetchOptions) => ({
+        content:
+          fetchOptions?.headers?.Accept === "text/html"
+            ? '<nav><a href="child">Child</a><a href="reference">Reference</a></nav>'
+            : "# Guide\n\n[Child](child)",
+        mimeType:
+          fetchOptions?.headers?.Accept === "text/html" ? "text/html" : "text/markdown",
+        source: url,
+        status: FetchStatus.SUCCESS,
+      }));
+
+      const result = await processItem(strategy, { url: testUrl, depth: 0 }, options);
+
+      expect(result.links).toEqual([
+        "https://example.com/docs/child",
+        "https://example.com/docs/reference",
+      ]);
+    });
+
+    it("uses a redirected primary URL as the HTML navigation base without reusing its etag", async () => {
+      const requestedUrl = "https://example.com/docs";
+      const finalUrl = "https://example.com/docs/start";
+      options.url = requestedUrl;
+      mockFetchFn.mockImplementation(async (url: string, fetchOptions) => {
+        if (fetchOptions?.headers?.Accept === "text/html") {
+          return {
+            content: '<nav><a href="child">Child</a></nav>',
+            mimeType: "text/html",
+            source: url,
+            status: FetchStatus.SUCCESS,
+          };
+        }
+        return {
+          content: "# Start",
+          mimeType: "text/markdown",
+          source: finalUrl,
+          etag: '"markdown-v1"',
+          status: FetchStatus.SUCCESS,
+        };
+      });
+
+      const result = await processItem(
+        strategy,
+        { url: requestedUrl, depth: 0, etag: '"markdown-v0"' },
+        options,
+      );
+
+      expect(result.url).toBe(finalUrl);
+      expect(result.links).toContain("https://example.com/docs/child");
+      const companionCall = mockFetchFn.mock.calls.find(
+        ([url, fetchOptions]) =>
+          url === finalUrl && fetchOptions?.headers?.Accept === "text/html",
+      );
+      expect(companionCall?.[1]).toMatchObject({ followRedirects: false });
+      expect(companionCall?.[1]).not.toHaveProperty("etag");
+    });
+
+    it("preserves an explicit caller Accept policy regardless of header casing", async () => {
+      const testUrl = "https://example.com/docs/";
+      options.url = testUrl;
+      options.headers = { aCcEpT: "text/markdown" };
+      mockFetchFn.mockResolvedValue({
+        content: "# Guide\n\n[Child](child)",
+        mimeType: "text/markdown",
+        source: testUrl,
+        status: FetchStatus.SUCCESS,
+      });
+
+      const result = await processItem(strategy, { url: testUrl, depth: 0 }, options);
+
+      expect(result.content?.textContent).toContain("# Guide");
+      expect(result.links).toEqual(["https://example.com/docs/child"]);
+      expect(mockFetchFn).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not probe an explicit Markdown URL for an HTML representation", async () => {
+      const testUrl = "https://example.com/docs/guide.md";
+      options.url = testUrl;
+      mockFetchFn.mockResolvedValue({
+        content: "# Guide",
+        mimeType: "text/markdown",
+        source: testUrl,
+        status: FetchStatus.SUCCESS,
+      });
+
+      const result = await processItem(strategy, { url: testUrl, depth: 0 }, options);
+
+      expect(result.content?.textContent).toBe("# Guide");
+      expect(mockFetchFn).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps valid Markdown and warns when HTML navigation discovery fails", async () => {
+      const testUrl = "https://example.com/docs/";
+      options.url = testUrl;
+      const warnSpy = vi.spyOn(logger, "warn");
+      mockFetchFn.mockImplementation(async (url: string, fetchOptions) => {
+        if (fetchOptions?.headers?.Accept === "text/html") {
+          throw new Error("HTML unavailable");
+        }
+        return {
+          content: "# Guide",
+          mimeType: "text/markdown",
+          source: url,
+          status: FetchStatus.SUCCESS,
+        };
+      });
+
+      const result = await processItem(strategy, { url: testUrl, depth: 0 }, options);
+
+      expect(result.content?.textContent).toBe("# Guide");
+      expect(result.links).toEqual([]);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("HTML navigation discovery failed"),
+      );
+    });
+
+    it("keeps valid Markdown and warns when the companion response is not HTML", async () => {
+      const testUrl = "https://example.com/docs/";
+      options.url = testUrl;
+      const warnSpy = vi.spyOn(logger, "warn");
+      mockFetchFn.mockResolvedValue({
+        content: "# Guide",
+        mimeType: "text/markdown",
+        source: testUrl,
+        status: FetchStatus.SUCCESS,
+      });
+
+      const result = await processItem(strategy, { url: testUrl, depth: 0 }, options);
+
+      expect(result.content?.textContent).toBe("# Guide");
+      expect(result.links).toEqual([]);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("did not return HTML"),
+      );
+    });
+
+    it("propagates cancellation from HTML navigation discovery", async () => {
+      const testUrl = "https://example.com/docs/";
+      options.url = testUrl;
+      const controller = new AbortController();
+      mockFetchFn.mockImplementation(async (url: string, fetchOptions) => {
+        if (fetchOptions?.headers?.Accept === "text/html") {
+          throw new CancellationError("HTML discovery cancelled");
+        }
+        return {
+          content: "# Guide",
+          mimeType: "text/markdown",
+          source: url,
+          status: FetchStatus.SUCCESS,
+        };
+      });
+
+      await expect(
+        processItem(strategy, { url: testUrl, depth: 0 }, options, controller.signal),
+      ).rejects.toThrow("HTML discovery cancelled");
+    });
+
+    it("discovers and crawls a new child when the refreshed root returns 304", async () => {
+      const testUrl = "https://example.com/docs/";
+      const childUrl = "https://example.com/docs/new";
+      options.url = testUrl;
+      options.maxDepth = 1;
+      options.initialQueue = [
+        { url: testUrl, depth: 0, pageId: 123, etag: '"markdown-v1"' },
+      ];
+      mockFetchFn.mockImplementation(async (url: string, fetchOptions) => {
+        if (url.endsWith("/llms.txt")) {
+          return {
+            content: "",
+            mimeType: "text/plain",
+            source: url,
+            status: FetchStatus.NOT_FOUND,
+          };
+        }
+        if (url === testUrl && fetchOptions?.etag) {
+          return {
+            content: "",
+            mimeType: "text/plain",
+            source: testUrl,
+            status: FetchStatus.NOT_MODIFIED,
+          };
+        }
+        if (url === testUrl && fetchOptions?.headers?.Accept === "text/html") {
+          return {
+            content: '<nav><a href="new">New</a></nav>',
+            mimeType: "text/html",
+            source: testUrl,
+            status: FetchStatus.SUCCESS,
+          };
+        }
+        return {
+          content: "<html><body><h1>New child</h1></body></html>",
+          mimeType: "text/html",
+          source: childUrl,
+          status: FetchStatus.SUCCESS,
+        };
+      });
+      const progressCallback = vi.fn<ProgressCallback<ScraperProgressEvent>>();
+
+      await strategy.scrape(options, progressCallback);
+
+      expect(
+        progressCallback.mock.calls.some(
+          ([event]) =>
+            event.currentUrl === testUrl && event.outcome === PageOutcome.Unchanged,
+        ),
+      ).toBe(true);
+      expect(
+        progressCallback.mock.calls.some(([event]) => event.result?.url === childUrl),
+      ).toBe(true);
+      const companionCall = mockFetchFn.mock.calls.find(
+        ([url, fetchOptions]) =>
+          url === testUrl && fetchOptions?.headers?.Accept === "text/html",
+      );
+      expect(companionCall?.[1]).not.toHaveProperty("etag");
     });
   });
 
