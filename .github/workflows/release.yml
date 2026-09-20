@@ -11,6 +11,7 @@ on:
 jobs:
   release:
     name: Release to npm and GitHub
+    if: github.repository == 'arabold/docs-mcp-server'
     runs-on: ubuntu-latest
     # Permissions needed for semantic-release to commit/tag/release
     permissions:
@@ -132,7 +133,7 @@ jobs:
     # Run only after the release job completes successfully
     needs: release
     # Run only if semantic-release actually published a new version
-    if: needs.release.outputs.new_release_published == 'true'
+    if: github.repository == 'arabold/docs-mcp-server' && needs.release.outputs.new_release_published == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read # Needed to check out the code

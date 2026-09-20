@@ -68,11 +68,13 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
-      - name: Verify development packages are absent
+      - name: Verify runtime package pruning
         run: >-
           docker run --rm --entrypoint sh
           "ghcr.io/${{ github.repository }}:${{ github.sha }}"
-          -c 'test ! -d /app/node_modules/npm'
+          -c 'test ! -d /app/node_modules/npm &&
+          ! find /app/node_modules -maxdepth 3 -type d
+          -name "*-linux-*-musl" -print -quit | grep -q .'
 
       - name: Run Docker E2E tests
         env:
