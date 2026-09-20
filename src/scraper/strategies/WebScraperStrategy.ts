@@ -6,6 +6,7 @@
 import fsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { CancellationError } from "../../pipeline/errors";
 import type { ProgressCallback } from "../../types";
 import type { AppConfig } from "../../utils/config";
 import { logger } from "../../utils/logger";
@@ -16,7 +17,11 @@ import {
   type UrlNormalizerOptions,
 } from "../../utils/url";
 import { AutoDetectFetcher } from "../fetcher";
+import { getHeader } from "../fetcher/headers";
 import { FetchStatus, type RawContent } from "../fetcher/types";
+import { HtmlCheerioParserMiddleware } from "../middleware/HtmlCheerioParserMiddleware";
+import { HtmlLinkExtractorMiddleware } from "../middleware/HtmlLinkExtractorMiddleware";
+import type { MiddlewareContext } from "../middleware/types";
 import {
   createMimeTypeCapabilityPredicate,
   type MimeTypeCapabilityPredicate,
@@ -62,6 +67,8 @@ export class WebScraperStrategy extends BaseScraperStrategy {
   private readonly pipelines: ContentPipeline[];
   private readonly canProcessMimeType: MimeTypeCapabilityPredicate;
   private readonly localFileStrategy: LocalFileStrategy;
+  private readonly htmlParser = new HtmlCheerioParserMiddleware();
+  private readonly htmlLinkExtractor = new HtmlLinkExtractorMiddleware();
   private tempFiles: string[] = [];
   private siblingwiseRedirectWarned = false;
   private pendingLlmsTxtProbe: LlmsTxtProbeResult | null = null;
@@ -205,6 +212,125 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     }
     const mimeType = MimeTypeUtils.detectMimeTypeFromPath(pathname);
     return mimeType ? MimeTypeUtils.isMarkdown(mimeType) : false;
+  }
+
+  private shouldDiscoverHtmlNavigation(
+    item: QueueItem,
+    effectiveSource: string,
+    options: ScraperOptions,
+  ): boolean {
+    return (
+      getHeader(options.headers, "accept") === undefined &&
+      !this.isMarkdownUrl(item.url) &&
+      !this.isMarkdownUrl(effectiveSource)
+    );
+  }
+
+  private async discoverHtmlNavigationLinks(
+    item: QueueItem,
+    effectiveSource: string,
+    options: ScraperOptions,
+    signal?: AbortSignal,
+  ): Promise<string[]> {
+    const { etag: _markdownEtag, ...fetchOptions } = this.createFetchOptions(
+      item,
+      options,
+      signal,
+    );
+
+    try {
+      const htmlContent = await this.fetcher.fetch(effectiveSource, {
+        ...fetchOptions,
+        // A companion representation must never redirect into a URL that the
+        // crawler has not admitted. The primary request has already resolved
+        // the canonical page, so a redirect here is a diagnostic, not a hint.
+        followRedirects: false,
+        headers: { ...options.headers, Accept: "text/html" },
+        acceptsMimeType: (mimeType) => MimeTypeUtils.isHtml(mimeType),
+      });
+
+      if (
+        htmlContent.status !== FetchStatus.SUCCESS ||
+        !MimeTypeUtils.isHtml(htmlContent.mimeType)
+      ) {
+        logger.warn(
+          `⚠️  HTML navigation discovery for ${effectiveSource} did not return HTML ` +
+            `(status=${htmlContent.status}, contentType=${htmlContent.mimeType}). ` +
+            `Keeping the primary representation.`,
+        );
+        return [];
+      }
+
+      const context: MiddlewareContext = {
+        contentType: htmlContent.mimeType,
+        content: convertToString(htmlContent.content, htmlContent.charset),
+        source: htmlContent.source,
+        links: [],
+        errors: [],
+        options,
+      };
+      await this.htmlParser.process(context, async () => {
+        await this.htmlLinkExtractor.process(context, async () => {});
+      });
+
+      if (context.errors.length > 0) {
+        logger.warn(
+          `⚠️  HTML navigation discovery failed for ${effectiveSource}: ` +
+            context.errors.map((error) => error.message).join("; "),
+        );
+        return [];
+      }
+
+      return context.links;
+    } catch (error) {
+      if (error instanceof CancellationError) {
+        throw error;
+      }
+      if (signal?.aborted) {
+        throw new CancellationError("HTML navigation discovery cancelled");
+      }
+      logger.warn(
+        `⚠️  HTML navigation discovery failed for ${effectiveSource}: ${error instanceof Error ? error.message : String(error)}. ` +
+          `Keeping the primary representation.`,
+      );
+      return [];
+    }
+  }
+
+  private filterDiscoveredLinks(
+    links: string[],
+    effectiveSource: string,
+    options: ScraperOptions,
+  ): string[] {
+    return [
+      ...new Set(
+        links.flatMap((link) => {
+          try {
+            const targetUrl = new URL(link, effectiveSource);
+
+            // Archives are readable but deliberately not followed mid-crawl.
+            if (isArchivePath(targetUrl.pathname)) {
+              return [];
+            }
+
+            if (!this.canProcessDiscoveredLink(targetUrl)) {
+              return [];
+            }
+
+            if (!this.shouldProcessUrl(targetUrl.href, options)) {
+              return [];
+            }
+            if (this.shouldFollowLinkFn) {
+              const baseUrl = this.canonicalBaseUrl ?? new URL(options.url);
+              return this.shouldFollowLinkFn(baseUrl, targetUrl) ? [targetUrl.href] : [];
+            }
+            return [targetUrl.href];
+          } catch {
+            return [];
+          }
+        }),
+      ),
+    ];
   }
 
   /**
@@ -511,16 +637,44 @@ export class WebScraperStrategy extends BaseScraperStrategy {
         `Fetch result for ${url}: status=${rawContent.status}, etag=${rawContent.etag || "none"}`,
       );
 
+      const shouldDiscoverHtmlNavigation = this.shouldDiscoverHtmlNavigation(
+        item,
+        effectiveSource,
+        options,
+      );
+
       // Return the status directly - BaseScraperStrategy handles NOT_MODIFIED and NOT_FOUND
       // Use the final URL from rawContent.source (which may differ due to redirects)
       if (rawContent.status !== FetchStatus.SUCCESS) {
         logger.debug(`Skipping pipeline for ${url} due to status: ${rawContent.status}`);
+        const navigationLinks =
+          rawContent.status === FetchStatus.NOT_MODIFIED &&
+          this.isRequestedRoot(item, options) &&
+          shouldDiscoverHtmlNavigation
+            ? await this.discoverHtmlNavigationLinks(
+                item,
+                effectiveSource,
+                options,
+                signal,
+              )
+            : [];
+        const filteredNavigationLinks = this.filterDiscoveredLinks(
+          navigationLinks,
+          effectiveSource,
+          options,
+        );
+        const maxDepth = options.maxDepth ?? this.config.scraper.maxDepth;
+        const navigationQueueItems =
+          item.depth + 1 > maxDepth
+            ? []
+            : filteredNavigationLinks.map(
+                (link) => ({ url: link, depth: item.depth + 1 }) satisfies QueueItem,
+              );
         return {
           url: effectiveSource,
-          links: [],
-          queueItems: llmsTxtQueueItems,
-          // Carried so a fatal skip at the requested root can name the type that
-          // caused it. Null for 304 and 404, whose MIME type describes nothing.
+          links: filteredNavigationLinks,
+          queueItems: [...llmsTxtQueueItems, ...navigationQueueItems],
+          // A fatal root skip must retain the response MIME type for diagnostics.
           sourceContentType: rawContent.mimeType ?? null,
           status: rawContent.status,
         };
@@ -572,6 +726,17 @@ export class WebScraperStrategy extends BaseScraperStrategy {
         logger.warn(`⚠️  Processing error for ${url}: ${err.message}`);
       }
 
+      const navigationLinks =
+        MimeTypeUtils.isMarkdown(rawContent.mimeType) && shouldDiscoverHtmlNavigation
+          ? await this.discoverHtmlNavigationLinks(item, effectiveSource, options, signal)
+          : [];
+      const mergedLinks = [...new Set([...(processed.links ?? []), ...navigationLinks])];
+      const filteredLinks = this.filterDiscoveredLinks(
+        mergedLinks,
+        effectiveSource,
+        options,
+      );
+
       // Check if content processing resulted in usable content
       if (!processed.textContent?.trim()) {
         const pipelineFailed = (processed.errors?.length ?? 0) > 0;
@@ -592,7 +757,7 @@ export class WebScraperStrategy extends BaseScraperStrategy {
           contentType: processed.contentType || rawContent.mimeType,
           etag: rawContent.etag,
           lastModified: rawContent.lastModified,
-          links: processed.links,
+          links: filteredLinks,
           queueItems: llmsTxtQueueItems,
           // A clean run that extracted nothing means the page is empty. An errored
           // run means we learned nothing about it, which is a different fact and
@@ -601,40 +766,6 @@ export class WebScraperStrategy extends BaseScraperStrategy {
           status: FetchStatus.SUCCESS,
         };
       }
-
-      const filteredLinks =
-        processed.links?.flatMap((link) => {
-          try {
-            const targetUrl = new URL(link, effectiveSource);
-
-            // Archives are readable but deliberately not followed mid-crawl.
-            // This is policy, so it stays separate from the capability gate below.
-            if (isArchivePath(targetUrl.pathname)) {
-              return [];
-            }
-
-            // Reject links whose extension names content no pipeline can read, before
-            // any request is issued. Detection is deliberately given the pathname only:
-            // passing the href would let a host like `example.zip` or `example.mov`
-            // resolve to an archive or video MIME type off its TLD.
-            if (!this.canProcessDiscoveredLink(targetUrl)) {
-              return [];
-            }
-
-            // Use the base class's shouldProcessUrl which handles scope + include/exclude patterns
-            if (!this.shouldProcessUrl(targetUrl.href, options)) {
-              return [];
-            }
-            // Apply optional custom filter function if provided
-            if (this.shouldFollowLinkFn) {
-              const baseUrl = this.canonicalBaseUrl ?? new URL(options.url);
-              return this.shouldFollowLinkFn(baseUrl, targetUrl) ? [targetUrl.href] : [];
-            }
-            return [targetUrl.href];
-          } catch {
-            return [];
-          }
-        }) ?? [];
 
       return {
         url: effectiveSource,
