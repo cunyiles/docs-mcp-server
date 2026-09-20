@@ -146,6 +146,27 @@ describe("MarkdownMetadataExtractorMiddleware", () => {
     expect(context.errors).toHaveLength(0);
   });
 
+  it("should parse folded YAML frontmatter titles", async () => {
+    const middleware = new MarkdownMetadataExtractorMiddleware();
+    const markdown = `---
+title: >-
+  Versioned API
+  Reference
+audience:
+  - developers
+  - operators
+---
+# Fallback Title`;
+    const context = createMockContext(markdown);
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await middleware.process(context, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(context.title).toBe("Versioned API Reference");
+    expect(context.errors).toHaveLength(0);
+  });
+
   it("should prioritize frontmatter title over H1", async () => {
     const middleware = new MarkdownMetadataExtractorMiddleware();
     const markdown = "---\ntitle: Correct Title\n---\n# Wrong Title";
