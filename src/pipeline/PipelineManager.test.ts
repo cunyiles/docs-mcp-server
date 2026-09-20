@@ -117,6 +117,7 @@ describe("PipelineManager", () => {
       // Database status tracking methods
       ensureLibraryAndVersion: vi.fn().mockResolvedValue(1), // Return mock version ID
       updateVersionStatus: vi.fn().mockResolvedValue(undefined),
+      storeScraperOptions: vi.fn().mockResolvedValue(undefined),
       updateVersionProgress: vi.fn().mockResolvedValue(undefined), // For progress tests
       getVersionsByStatus: vi.fn().mockResolvedValue([]),
       // Refresh job methods
@@ -397,14 +398,14 @@ describe("PipelineManager", () => {
       expect(mockStore.updateVersionProgress).toHaveBeenCalledWith(456, 50, 300, 0);
     });
 
-    it("should handle database errors gracefully during progress updates", async () => {
+    it("should reject database errors during progress updates", async () => {
       (mockStore.updateVersionProgress as Mock).mockRejectedValue(new Error("DB error"));
 
       const job = createInternalTestJob();
       const progress = createTestProgress(30, 150);
 
       // Should not throw
-      await expect(manager.updateJobProgress(job, progress)).resolves.not.toThrow();
+      await expect(manager.updateJobProgress(job, progress)).rejects.toThrow("DB error");
 
       // In-memory updates should still work
       expect(job.progress).toEqual(progress);
@@ -600,18 +601,18 @@ describe("PipelineManager", () => {
       expect(mockStore.updateVersionStatus).toHaveBeenCalledWith(1, "queued", undefined);
     });
 
-    it("should handle database errors gracefully", async () => {
+    it("should reject a job that cannot be persisted", async () => {
       // Mock database failure
       (mockStore.updateVersionStatus as Mock).mockRejectedValue(new Error("DB Error"));
 
       const options = { url: "http://example.com", library: "test-lib", version: "1.0" };
 
       // Should not throw even if database update fails
-      await expect(
-        manager.enqueueScrapeJob("test-lib", "1.0", options),
-      ).resolves.toBeDefined();
+      await expect(manager.enqueueScrapeJob("test-lib", "1.0", options)).rejects.toThrow(
+        "DB Error",
+      );
 
-      // Job should still be created in memory despite database error
+      // The failed enqueue remains visible for diagnostics
       const allJobs = await manager.getJobs();
       expect(allJobs).toHaveLength(1);
       expect(allJobs[0].library).toBe("test-lib");
@@ -781,7 +782,7 @@ describe("PipelineManager", () => {
       expect(shallowItem?.pageId).toBe(11);
     });
 
-    it("should perform full re-scrape instead of refresh when version is not completed", async () => {
+    it("should refresh existing incomplete pages unconditionally and revisit the source", async () => {
       // Setup: Mock an incomplete version (failed scrape)
       const mockPages = [
         { id: 1, url: "https://example.com/page1", depth: 0, etag: "etag1" },
@@ -807,19 +808,14 @@ describe("PipelineManager", () => {
         options: { maxDepth: 2 },
       });
 
-      // Spy on enqueueJobWithStoredOptions to verify it's called
-      const enqueueStoredSpy = vi.spyOn(manager, "enqueueJobWithStoredOptions");
-      enqueueStoredSpy.mockResolvedValue("mock-job-id");
-
-      // Action: Attempt to enqueue a refresh job
       const jobId = await manager.enqueueRefreshJob("incomplete-lib", "1.0.0");
-
-      // Assertions: Should have called enqueueJobWithStoredOptions instead of normal refresh
-      expect(enqueueStoredSpy).toHaveBeenCalledWith("incomplete-lib", "1.0.0", undefined);
-      expect(jobId).toBe("mock-job-id");
-
-      // Should NOT have called getPagesByVersionId since we're doing a full re-scrape
-      expect(mockStore.getPagesByVersionId).not.toHaveBeenCalled();
+      const job = await manager.getJob(jobId);
+      expect(job?.scraperOptions?.isRefresh).toBe(true);
+      expect(job?.scraperOptions?.initialQueue).toEqual([
+        { url: "https://example.com", depth: 0 },
+        { url: "https://example.com/page1", depth: 0, pageId: 1, etag: undefined },
+        { url: "https://example.com/page2", depth: 1, pageId: 2, etag: undefined },
+      ]);
     });
 
     it("should perform full re-scrape for queued versions during refresh", async () => {

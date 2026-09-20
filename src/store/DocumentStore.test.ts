@@ -2523,7 +2523,7 @@ describe("DocumentStore - Embedding Model Change Safety", () => {
       mockEmbeddingDimension.value = 0;
 
       await expect(createStore("openai:empty-vector-model")).rejects.toThrow(
-        "Invalid detected embedding dimension from embedding provider probe: 0. Must be a positive integer.",
+        "Embedding provider returned an invalid test vector",
       );
       store = await createStore("");
     });

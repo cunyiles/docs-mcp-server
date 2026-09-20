@@ -47,6 +47,9 @@ export class PipelineWorker {
   async executeJob(job: InternalPipelineJob, callbacks: WorkerCallbacks): Promise<void> {
     const { id: jobId, library, version, scraperOptions, abortController } = job;
     const signal = abortController.signal;
+    // A scraper may intentionally ignore fetch errors, including callback rejections.
+    // Remember persistence failures independently so they can never complete a job.
+    let persistenceError: unknown;
 
     logger.debug(`[${jobId}] Worker starting job for ${library}@${version}`);
 
@@ -74,41 +77,46 @@ export class PipelineWorker {
             throw new CancellationError("Job cancelled during scraping progress");
           }
 
-          // Update job object directly (manager holds the reference)
-          // Report progress via manager's callback (single source of truth)
-          await callbacks.onJobProgress?.(job, progress);
-
           // Branch on the reported outcome rather than inferring one from a null
           // result: `Unchanged` and `Empty` both arrive without content but mean
           // opposite things — one says keep what is stored, the other says the
           // page is now empty. The switch is exhaustive, so adding an outcome
           // becomes a compile error here rather than a silent no-op.
-          switch (progress.outcome) {
-            case PageOutcome.Empty:
-              await this.recordEmptyPage(job, callbacks, library, version, progress);
-              break;
-            case PageOutcome.Absent:
-              await this.removeDeletedPage(job, callbacks, progress);
-              break;
-            case PageOutcome.Stored:
-              await this.storeResult(job, callbacks, library, version, progress);
-              break;
-            // Nothing to persist: unchanged content stays, a skipped resource was
-            // never downloaded, and a failure has already been reported. Listed
-            // explicitly so this reads as a decision rather than an omission.
-            case PageOutcome.Unchanged:
-            case PageOutcome.Skipped:
-            case PageOutcome.Failed:
-              break;
-            default: {
-              const unhandled: never = progress.outcome;
-              logger.error(`❌ [${job.id}] Unhandled page outcome: ${unhandled}`);
+          if (persistenceError) throw persistenceError;
+          try {
+            await callbacks.onJobProgress?.(job, progress);
+            switch (progress.outcome) {
+              case PageOutcome.Empty:
+                await this.recordEmptyPage(job, callbacks, library, version, progress);
+                break;
+              case PageOutcome.Absent:
+                await this.removeDeletedPage(job, callbacks, progress);
+                break;
+              case PageOutcome.Stored:
+                await this.storeResult(job, callbacks, library, version, progress);
+                break;
+              // Nothing to persist: unchanged content stays, a skipped resource was
+              // never downloaded, and a failure has already been reported. Listed
+              // explicitly so this reads as a decision rather than an omission.
+              case PageOutcome.Unchanged:
+              case PageOutcome.Skipped:
+              case PageOutcome.Failed:
+                break;
+              default: {
+                const unhandled: never = progress.outcome;
+                logger.error(`❌ [${job.id}] Unhandled page outcome: ${unhandled}`);
+              }
             }
+          } catch (error) {
+            persistenceError ??= error;
+            throw error;
           }
         },
         signal, // Pass signal to scraper service
       );
       // --- End Core Job Logic ---
+
+      if (persistenceError) throw persistenceError;
 
       // Check signal one last time after scrape finishes
       if (signal.aborted) {
@@ -120,7 +128,7 @@ export class PipelineWorker {
     } catch (error) {
       // Re-throw error to be caught by the manager in _runJob
       logger.warn(`⚠️  [${jobId}] Worker encountered error: ${error}`);
-      throw error;
+      throw persistenceError ?? error;
     }
     // Note: The manager (_runJob) is responsible for updating final job status (COMPLETED/FAILED/CANCELLED)
     // and resolving/rejecting the completion promise based on the outcome here.
@@ -189,6 +197,7 @@ export class PipelineWorker {
         job,
         docError instanceof Error ? docError : new Error(String(docError)),
       );
+      throw docError;
     }
   }
 
@@ -249,12 +258,13 @@ export class PipelineWorker {
       logger.error(
         `❌ [${job.id}] Failed to process content ${progress.currentUrl}: ${docError}`,
       );
-      // A single document error is logged and the job continues.
+      // Report the failure, then reject the job regardless of fetch ignore-errors policy.
       await callbacks.onJobError?.(
         job,
         docError instanceof Error ? docError : new Error(String(docError)),
         progress.result,
       );
+      throw docError;
     }
   }
 }

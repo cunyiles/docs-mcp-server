@@ -130,6 +130,7 @@ export class DocumentStore {
   private readonly embeddingBatchChars: number;
   private readonly embeddingInitTimeoutMs: number;
   private modelDimension: number | null = null;
+  private probedDimension: number | null = null;
   private readonly embeddingConfig?: EmbeddingModelConfig | null;
   private isVectorSearchEnabled: boolean = false;
 
@@ -526,6 +527,13 @@ export class DocumentStore {
    * Throws an error if the input vector is longer than the database dimension.
    */
   private padVector(vector: number[]): number[] {
+    if (
+      !Array.isArray(vector) ||
+      vector.length === 0 ||
+      !vector.every((value) => typeof value === "number" && Number.isFinite(value))
+    ) {
+      throw new StoreError("Embedding provider returned an invalid vector");
+    }
     if (vector.length > this.dbDimension) {
       throw new Error(
         `Vector dimension ${vector.length} exceeds database dimension ${this.dbDimension}`,
@@ -721,13 +729,16 @@ export class DocumentStore {
       }
 
       // If we reach here, embeddings are successfully initialized
-      this.isVectorSearchEnabled = true;
       logger.debug(
         `Embeddings initialized: ${config.provider}:${config.model} (${this.dbDimension}d)`,
       );
 
       // Persist the active embedding model identity for change detection on next startup
       this.setEmbeddingMetadata(config.modelSpec, this.dbDimension);
+      this.isVectorSearchEnabled = true;
+      logger.info(
+        `✅ Vector search enabled: ${config.provider}:${config.model} (${this.dbDimension}d)`,
+      );
     } catch (error) {
       this.throwEmbeddingInitializationError(error, config);
     }
@@ -760,11 +771,53 @@ export class DocumentStore {
 
     try {
       const testVector = await Promise.race([testPromise, timeoutPromise]);
+      if (
+        !Array.isArray(testVector) ||
+        testVector.length === 0 ||
+        !testVector.every((value) => typeof value === "number" && Number.isFinite(value))
+      ) {
+        throw new StoreError("Embedding provider returned an invalid test vector");
+      }
+      this.probedDimension = testVector.length;
       return testVector.length;
     } finally {
       if (timeoutId !== undefined) {
         clearTimeout(timeoutId);
       }
+    }
+  }
+
+  /** Verifies required semantic readiness before any vector-table replacement. */
+  private async verifyRequiredEmbeddings(): Promise<void> {
+    if (!this.config.embeddings.required) return;
+    const config = this.embeddingConfig;
+    if (!config) {
+      throw new StoreError(
+        "Embeddings are required but no valid embedding model is configured",
+      );
+    }
+    if (!areCredentialsAvailable(config.provider)) {
+      throw new StoreError(
+        `Embeddings are required but credentials for ${config.provider} are missing`,
+      );
+    }
+    try {
+      this.embeddings ??= this.createEmbeddingClient(this.dbDimension);
+      const dimension =
+        this.probedDimension ?? (await this.detectEmbeddingDimension(this.embeddings));
+      const nativeDimension = this.modelDimension ?? this.dbDimension;
+      const expectedDimension =
+        this.embeddings instanceof FixedDimensionEmbeddings &&
+        this.embeddings.allowTruncate
+          ? Math.min(nativeDimension, this.dbDimension)
+          : nativeDimension;
+      if (dimension !== expectedDimension || dimension > this.dbDimension) {
+        throw new StoreError(
+          `Embedding probe dimension ${dimension} does not match expected dimension ${expectedDimension} within database dimension ${this.dbDimension}`,
+        );
+      }
+    } catch (error) {
+      throw new StoreError("Required embedding readiness probe failed", error);
     }
   }
 
@@ -790,7 +843,7 @@ export class DocumentStore {
         if (!isVectorDimensionExplicit(this.config)) {
           this.dbDimension = storedDimension;
         }
-        this.modelDimension = this.dbDimension;
+        this.modelDimension = config.dimensions ?? this.dbDimension;
         logger.debug(
           `Vector dimension loaded from metadata: ${this.dbDimension} for ${config.provider}:${config.model}`,
         );
@@ -862,6 +915,12 @@ export class DocumentStore {
     error: unknown,
     config: EmbeddingModelConfig,
   ): never {
+    if (this.config.embeddings.required) {
+      throw new StoreError(
+        `Failed to initialize required embeddings for ${config.provider}`,
+        error,
+      );
+    }
     if (error instanceof Error) {
       if (
         error.message.includes("does not exist") ||
@@ -1025,6 +1084,8 @@ export class DocumentStore {
       //    The CLI layer catches this to prompt (TTY) or fail (non-interactive).
       this.checkEmbeddingModelChange();
 
+      await this.verifyRequiredEmbeddings();
+
       // 5. Create vector table at runtime with resolved dimension
       //    Must run before prepareStatements() because triggers on `documents`
       //    reference `documents_vec`.
@@ -1062,6 +1123,8 @@ export class DocumentStore {
 
     const currentModel = this.config.app.embeddingModel;
     const currentDimension = this.dbDimension;
+
+    await this.verifyRequiredEmbeddings();
 
     // Invalidate all existing vectors and update metadata
     this.invalidateAllVectors(currentModel, currentDimension);
