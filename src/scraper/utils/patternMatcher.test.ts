@@ -393,6 +393,40 @@ describe("patternMatcher", () => {
       expect(shouldIncludeUrl("https://example.com/other/file", patterns)).toBe(false);
     });
 
+    it("should apply brace-expanded include and exclude patterns", () => {
+      const includePatterns = ["docs/{api,guides}/**"];
+      const excludePatterns = ["docs/api/{legacy,internal}/**"];
+
+      expect(
+        shouldIncludeUrl(
+          "https://example.com/docs/api/reference",
+          includePatterns,
+          excludePatterns,
+        ),
+      ).toBe(true);
+      expect(
+        shouldIncludeUrl(
+          "https://example.com/docs/guides/getting-started",
+          includePatterns,
+          excludePatterns,
+        ),
+      ).toBe(true);
+      expect(
+        shouldIncludeUrl(
+          "https://example.com/docs/api/internal/auth",
+          includePatterns,
+          excludePatterns,
+        ),
+      ).toBe(false);
+      expect(
+        shouldIncludeUrl(
+          "https://example.com/docs/tutorials/intro",
+          includePatterns,
+          excludePatterns,
+        ),
+      ).toBe(false);
+    });
+
     it("should handle common documentation file patterns", () => {
       const docPatterns = [
         "**/README.md",

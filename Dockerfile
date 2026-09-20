@@ -38,6 +38,9 @@ COPY . .
 # Build application
 RUN npm run build
 
+# Remove build-only packages before copying dependencies into the runtime image.
+RUN npm prune --omit=dev --ignore-scripts
+
 # Production stage
 FROM base AS production
 
