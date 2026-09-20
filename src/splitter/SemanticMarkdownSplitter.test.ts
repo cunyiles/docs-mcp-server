@@ -3,6 +3,56 @@ import { describe, expect, it } from "vitest";
 import { SemanticMarkdownSplitter } from "./SemanticMarkdownSplitter";
 
 describe("SemanticMarkdownSplitter", () => {
+  it("preserves complex raw HTML table facts alongside Markdown and code", async () => {
+    const splitter = new SemanticMarkdownSplitter(100, 5000);
+    const chunks = await splitter.splitText(`# Reservation policy
+
+Read the policy before booking.
+
+<table><thead><tr><th>Mode</th><th>Policy</th></tr></thead><tbody>
+<tr><td><code>INSTANT</code></td><td><div>After the cutoff:</div>
+<ul><li>INSTANT is unavailable.</li><li>Only WAITLIST remains.</li></ul>
+<p>The reservation is excluded from instant results.</p></td></tr>
+</tbody></table>
+
+## Example
+
+\`\`\`js
+reserve("WAITLIST");
+\`\`\`
+
+Contact support for assistance.`);
+    const content = chunks.map((chunk) => chunk.content).join("\n");
+    expect(content).toContain("INSTANT is unavailable.");
+    expect(content).toContain("Only WAITLIST remains.");
+    expect(content).toContain("The reservation is excluded from instant results.");
+    expect(content).toContain("Read the policy before booking.");
+    expect(content).toContain('reserve("WAITLIST");');
+    expect(content).toContain("Contact support for assistance.");
+    expect(chunks.some((chunk) => chunk.types.includes("table"))).toBe(true);
+    expect(chunks.every((chunk) => chunk.content.length <= 5000)).toBe(true);
+  });
+
+  it("sanitizes active raw markup while preserving table text and escaped code", async () => {
+    const splitter = new SemanticMarkdownSplitter(100, 5000);
+    const chunks = await splitter.splitText(`<table><tr><th>Policy</th></tr>
+<tr><td><p>Visible reservation fact</p><script>maliciousScript()</script>
+<a href="javascript:maliciousLink()">Reference</a>
+<img src="x" onerror="maliciousHandler()"></td></tr></table>
+
+<script>outsideScript()</script>
+
+\`\`\`html
+<script>documentedExample()</script>
+\`\`\``);
+    const content = chunks.map((chunk) => chunk.content).join("\n");
+    expect(content).toContain("Visible reservation fact");
+    expect(content).not.toMatch(
+      /maliciousScript|maliciousLink|maliciousHandler|outsideScript|javascript:/,
+    );
+    expect(content).toContain("<script>documentedExample()</script>");
+  });
+
   it("should handle empty markdown", async () => {
     const splitter = new SemanticMarkdownSplitter(100, 5000);
     const result = await splitter.splitText("");

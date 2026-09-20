@@ -28,6 +28,38 @@ describe("HtmlPipeline", () => {
     vi.restoreAllMocks();
   });
 
+  it("stores nested raw table facts in chunks as well as complete text", async () => {
+    const pipeline = new HtmlPipeline(appConfig);
+    const result = await pipeline.process(
+      {
+        content: `<html><body><main><h1>Reservation modes</h1>
+        <p>Choose a reservation mode.</p>
+        <table><tr><th>Mode</th><th>Policy</th></tr>
+        <tr><td>INSTANT</td><td><div>After the cutoff:</div>
+        <ul><li>INSTANT is unavailable.</li><li>Only WAITLIST remains.</li></ul>
+        <p>The reservation is excluded from instant results.</p></td></tr></table>
+        <pre><code>reserve("WAITLIST");</code></pre>
+        <p>Contact support for assistance.</p></main></body></html>`,
+        mimeType: "text/html",
+        source: "https://example.com/policy",
+        status: FetchStatus.SUCCESS,
+      },
+      {} as ScraperOptions,
+    );
+    const stored = (result.chunks ?? []).map((chunk) => chunk.content).join("\n");
+    for (const fact of [
+      "INSTANT is unavailable.",
+      "Only WAITLIST remains.",
+      "The reservation is excluded from instant results.",
+      'reserve("WAITLIST");',
+      "Choose a reservation mode.",
+      "Contact support for assistance.",
+    ]) {
+      expect(result.textContent).toContain(fact);
+      expect(stored).toContain(fact);
+    }
+  });
+
   it("canProcess returns true for text/html", () => {
     const pipeline = new HtmlPipeline(appConfig);
     expect(pipeline.canProcess("text/html")).toBe(true);

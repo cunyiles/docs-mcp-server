@@ -1,4 +1,5 @@
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
+import createDOMPurify from "dompurify";
 import matter from "gray-matter";
 import remarkGfm from "remark-gfm";
 import remarkHtml from "remark-html";
@@ -525,7 +526,7 @@ export class SemanticMarkdownSplitter implements DocumentSplitter {
     const html = await unified()
       .use(remarkParse)
       .use(remarkGfm)
-      .use(remarkHtml)
+      .use(remarkHtml, { sanitize: false })
       .process(markdown);
 
     return `<!DOCTYPE html>
@@ -542,6 +543,12 @@ export class SemanticMarkdownSplitter implements DocumentSplitter {
   private async parseHtml(html: string): Promise<Document> {
     // Use createJSDOM which includes default options like virtualConsole
     const { window } = createJSDOM(html);
+    // Preserve raw table structure, then sanitize before semantic traversal.
+    createDOMPurify(window).sanitize(window.document.body, {
+      IN_PLACE: true,
+      USE_PROFILES: { html: true },
+      FORBID_TAGS: ["style"],
+    });
     return window.document;
   }
 }

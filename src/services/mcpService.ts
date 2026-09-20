@@ -3,6 +3,7 @@
  * Provides modular server composition for MCP endpoints.
  */
 
+import type { OutgoingHttpHeader, OutgoingHttpHeaders } from "node:http";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -163,12 +164,64 @@ export async function registerMcpService(
           sessionIdGenerator: undefined,
         });
 
-        const cleanupRequest = () => {
-          logger.debug("Streamable HTTP request closed");
-          requestTransport.close();
-          requestServer.close(); // Close the per-request server instance
+        let isEventStream = false;
+        const writeHead = reply.raw.writeHead.bind(reply.raw);
+        reply.raw.writeHead = function (
+          statusCode: number,
+          statusMessageOrHeaders?: string | OutgoingHttpHeaders | OutgoingHttpHeader[],
+          headers?: OutgoingHttpHeaders | OutgoingHttpHeader[],
+        ) {
+          const responseHeaders =
+            typeof statusMessageOrHeaders === "string" ? headers : statusMessageOrHeaders;
+          // Node does not expose headers passed directly to writeHead via getHeader.
+          let contentType = this.getHeader("content-type");
+          if (Array.isArray(responseHeaders)) {
+            for (let index = 0; index < responseHeaders.length; index += 2) {
+              if (String(responseHeaders[index]).toLowerCase() === "content-type") {
+                contentType = responseHeaders[index + 1];
+              }
+            }
+          } else if (responseHeaders) {
+            for (const [name, value] of Object.entries(responseHeaders)) {
+              if (name.toLowerCase() === "content-type") contentType = value;
+            }
+          }
+          isEventStream = String(contentType).startsWith("text/event-stream");
+          return typeof statusMessageOrHeaders === "string"
+            ? writeHead(statusCode, statusMessageOrHeaders, headers)
+            : writeHead(statusCode, statusMessageOrHeaders);
         };
 
+        let cleanedUp = false;
+        const cleanupRequest = () => {
+          if (cleanedUp) return;
+          cleanedUp = true;
+          clearInterval(heartbeatInterval);
+          logger.debug("Streamable HTTP request closed");
+          void Promise.all([requestTransport.close(), requestServer.close()]).catch(
+            (error) => logger.debug(`Streamable HTTP cleanup error: ${error}`),
+          );
+        };
+        const heartbeatInterval = setInterval(() => {
+          // The SDK chooses SSE, JSON, or an empty acknowledgment after validation.
+          // Only keep an established SSE response alive; never commit its headers here.
+          if (
+            !reply.raw.headersSent ||
+            reply.raw.writableEnded ||
+            reply.raw.destroyed ||
+            !isEventStream
+          )
+            return;
+          try {
+            reply.raw.write(": heartbeat\n\n");
+          } catch {
+            cleanupRequest();
+            reply.raw.destroy();
+          }
+        }, config.server.heartbeatMs);
+        heartbeatInterval.unref();
+
+        reply.raw.on("finish", cleanupRequest);
         reply.raw.on("close", cleanupRequest);
         reply.raw.on("error", (error) => {
           logger.debug(`Streamable HTTP connection error: ${error}`);
