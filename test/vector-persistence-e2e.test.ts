@@ -424,6 +424,81 @@ describe("Embedding readiness and atomic replacement", () => {
     expect(requests).toBe(2);
   });
 
+  it("recovers unknown native width after a fresh-module restart with explicit padding", async () => {
+    const model = "unknown-padded-restart-model";
+    settings.app.embeddingModel = `openai:${model}`;
+    settings.embeddings.vectorDimension = 1536;
+    markVectorDimensionSource(settings, true);
+    responseVector = Array(384).fill(0.01);
+    const first = openStore();
+    await first.initialize();
+    await first.addDocuments("library", "1.0", 0, page());
+    const previous = snapshot();
+    const previousSearch = await first.findByContent("library", "1.0", "searchable", 5);
+    await first.shutdown();
+    stores.pop();
+
+    // Reload the module graph as on process startup; no discovered dimension survives.
+    vi.resetModules();
+    const { DocumentStore: RestartedStore } = await import("../src/store/DocumentStore");
+    const { EmbeddingConfig: RestartedEmbeddingConfig } = await import(
+      "../src/store/embeddings/EmbeddingConfig"
+    );
+    const { markVectorDimensionSource: markRestartedDimension } = await import(
+      "../src/utils/config"
+    );
+    expect(RestartedEmbeddingConfig.getKnownModelDimensions(model)).toBeNull();
+    markRestartedDimension(settings, true);
+    const restarted = new RestartedStore(path.join(directory, "documents.db"), settings);
+    stores.push(restarted);
+    requests = 0;
+    await expect(restarted.initialize()).resolves.toBeUndefined();
+    expect(requests).toBe(1);
+    expect(restarted.getEmbeddingMetadata()).toEqual({
+      model: `openai:${model}`,
+      dimension: "1536",
+    });
+    expect(snapshot()).toEqual(previous);
+    expect(await restarted.findByContent("library", "1.0", "searchable", 5)).toEqual(
+      previousSearch,
+    );
+  });
+
+  it("accepts a known wrapped model padded to a larger explicit database width", async () => {
+    settings.app.embeddingModel = "gemini:embedding-001";
+    settings.embeddings.vectorDimension = 1536;
+    markVectorDimensionSource(settings, true);
+    vi.stubEnv("GOOGLE_API_KEY", "test-key");
+    const values = Array(768).fill(0.01);
+    let probes = 0;
+    server.use(
+      http.post(
+        /^https:\/\/generativelanguage\.googleapis\.com\/v1beta\/models\/embedding-001:embedContent$/,
+        () => {
+          probes++;
+          return HttpResponse.json({ embedding: { values } });
+        },
+      ),
+      http.post(
+        /^https:\/\/generativelanguage\.googleapis\.com\/v1beta\/models\/embedding-001:batchEmbedContents$/,
+        async ({ request }) => {
+          const body = (await request.json()) as { requests: unknown[] };
+          return HttpResponse.json({ embeddings: body.requests.map(() => ({ values })) });
+        },
+      ),
+    );
+    const store = openStore();
+    await expect(store.initialize()).resolves.toBeUndefined();
+    expect(probes).toBe(1);
+    expect(store.getEmbeddingMetadata()).toEqual({
+      model: "gemini:embedding-001",
+      dimension: "1536",
+    });
+    await store.addDocuments("library", "1.0", 0, page());
+    expect(snapshot().vectors).toHaveLength(1);
+    expect(await store.findByContent("library", "1.0", "searchable", 5)).toHaveLength(1);
+  });
+
   it("reuses the successful unknown-model dimension probe", async () => {
     settings.app.embeddingModel = "openai:unknown-readiness-test-model";
     responseVector = Array(384).fill(0.01);
