@@ -1618,7 +1618,15 @@ describe("WebScraperStrategy", () => {
       const controller = new AbortController();
       mockFetchFn.mockImplementation(async (url: string, fetchOptions) => {
         if (fetchOptions?.headers?.Accept === "text/html") {
-          throw new CancellationError("HTML discovery cancelled");
+          expect(fetchOptions.signal).toBe(controller.signal);
+          return new Promise((_, reject) => {
+            fetchOptions.signal?.addEventListener(
+              "abort",
+              () => reject(new CancellationError("HTML discovery cancelled")),
+              { once: true },
+            );
+            controller.abort();
+          });
         }
         return {
           content: "# Guide",
