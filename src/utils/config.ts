@@ -150,6 +150,7 @@ export const DEFAULT_CONFIG = {
     },
   },
   embeddings: {
+    required: false,
     batchSize: 100,
     batchChars: 50_000,
     requestTimeoutMs: 30_000,
@@ -344,6 +345,7 @@ export const AppConfigSchema = z.object({
     .default(DEFAULT_CONFIG.splitter),
   embeddings: z
     .object({
+      required: envBoolean.default(DEFAULT_CONFIG.embeddings.required),
       batchSize: z.coerce.number().int().default(DEFAULT_CONFIG.embeddings.batchSize),
       batchChars: z.coerce.number().int().default(DEFAULT_CONFIG.embeddings.batchChars),
       requestTimeoutMs: z.coerce

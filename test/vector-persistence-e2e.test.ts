@@ -1,26 +1,41 @@
-/**
- * Ensures embeddings are persisted into the documents_vec virtual table.
- *
- * This test is self-contained:
- * - Uses a temporary SQLite database (storePath points to a temp dir)
- * - Uses MSW to mock OpenAI embeddings so it does not require network access
- */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+/** Exercises vector persistence, required readiness, and atomic refresh failures. */
 import { mkdtempSync, rmSync } from "node:fs";
-import path from "node:path";
 import { tmpdir } from "node:os";
-import { config } from "dotenv";
+import path from "node:path";
 import Database from "better-sqlite3";
+import { config } from "dotenv";
+import { delay, http, HttpResponse } from "msw";
 import * as sqliteVec from "sqlite-vec";
-import { ScrapeTool } from "../src/tools/ScrapeTool";
-import { createLocalDocumentManagement } from "../src/store";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import { EventBusService } from "../src/events";
 import { PipelineFactory } from "../src/pipeline/PipelineFactory";
+import { PipelineManager } from "../src/pipeline/PipelineManager";
+import { PipelineJobStatus } from "../src/pipeline/types";
+import { ScrapeMode, type ScrapeResult } from "../src/scraper/types";
+import { createLocalDocumentManagement } from "../src/store";
+import { DocumentManagementService } from "../src/store/DocumentManagementService";
+import { DocumentStore } from "../src/store/DocumentStore";
 import {
   EmbeddingConfig,
   type EmbeddingModelConfig,
 } from "../src/store/embeddings/EmbeddingConfig";
-import { EventBusService } from "../src/events";
-import { loadConfig } from "../src/utils/config";
+import { ScrapeTool } from "../src/tools/ScrapeTool";
+import {
+  type AppConfig,
+  loadConfig,
+  markVectorDimensionSource,
+} from "../src/utils/config";
+import { logger } from "../src/utils/logger";
+import { server } from "./mock-server";
 
 config();
 
@@ -97,39 +112,578 @@ describe("Vector persistence", () => {
     }
   });
 
-  it(
-    "persists embeddings into documents_vec",
-    async () => {
-      const readmePath = path.resolve(process.cwd(), "README.md");
-      const fileUrl = `file://${readmePath}`;
+  it("persists embeddings into documents_vec", async () => {
+    const readmePath = path.resolve(process.cwd(), "README.md");
+    const fileUrl = `file://${readmePath}`;
 
-      await scrapeTool.execute({
-        library: "vector-persist-lib",
-        version: "1.0.0",
-        url: fileUrl,
-        waitForCompletion: true,
-      });
+    await scrapeTool.execute({
+      library: "vector-persist-lib",
+      version: "1.0.0",
+      url: fileUrl,
+      waitForCompletion: true,
+    });
 
-      const exists = await docService.exists("vector-persist-lib", "1.0.0");
-      expect(exists).toBe(true);
+    const exists = await docService.exists("vector-persist-lib", "1.0.0");
+    expect(exists).toBe(true);
 
-      const dbPath = path.join(tempDir, "documents.db");
-      const db = new Database(dbPath);
-      sqliteVec.load(db);
+    const dbPath = path.join(tempDir, "documents.db");
+    const db = new Database(dbPath);
+    sqliteVec.load(db);
 
-      const { chunkCount } = db
-        .prepare(
-          "SELECT COUNT(*) as chunkCount FROM documents WHERE embedding IS NOT NULL",
-        )
-        .get() as { chunkCount: number };
-      expect(chunkCount).toBeGreaterThan(0);
+    const { chunkCount } = db
+      .prepare("SELECT COUNT(*) as chunkCount FROM documents WHERE embedding IS NOT NULL")
+      .get() as { chunkCount: number };
+    expect(chunkCount).toBeGreaterThan(0);
 
-      const { vecCount } = db
-        .prepare("SELECT COUNT(*) as vecCount FROM documents_vec")
-        .get() as { vecCount: number };
-      expect(vecCount).toBeGreaterThan(0);
-      expect(vecCount).toBe(chunkCount);
+    const { vecCount } = db
+      .prepare("SELECT COUNT(*) as vecCount FROM documents_vec")
+      .get() as { vecCount: number };
+    expect(vecCount).toBeGreaterThan(0);
+    expect(vecCount).toBe(chunkCount);
+  }, 60000);
+});
+
+/** Required readiness and replacement run through the real provider and SQLite. */
+describe("Embedding readiness and atomic replacement", () => {
+  let directory: string;
+  let settings: AppConfig;
+  const stores: DocumentStore[] = [];
+  let service: DocumentManagementService | undefined;
+  let manager: PipelineManager | undefined;
+  let responseVector: unknown[];
+  let rejectEmbedding = false;
+  let requests = 0;
+  let failRequest = 0;
+
+  beforeEach(() => {
+    directory = mkdtempSync(path.join(tmpdir(), "embedding-readiness-"));
+    vi.stubEnv("OPENAI_API_KEY", "test-key");
+    vi.stubEnv("OPENAI_API_BASE", "https://embeddings.example.com/v1");
+    settings = loadConfig();
+    settings.app.storePath = directory;
+    settings.app.embeddingModel = "openai:text-embedding-3-small";
+    settings.embeddings.required = true;
+    settings.embeddings.initTimeoutMs = 100;
+    settings.embeddings.requestTimeoutMs = 200;
+    responseVector = Array(1536).fill(0.01);
+    rejectEmbedding = false;
+    requests = 0;
+    failRequest = 0;
+    vi.mocked(logger.info).mockClear();
+    server.use(
+      http.get(
+        "https://docs.example.com/llms.txt",
+        () => new HttpResponse(null, { status: 404 }),
+      ),
+      http.post("https://embeddings.example.com/v1/embeddings", async ({ request }) => {
+        requests++;
+        if (rejectEmbedding || requests === failRequest) {
+          return HttpResponse.json(
+            { error: { message: "provider unavailable" } },
+            { status: 400 },
+          );
+        }
+        const body = (await request.json()) as { input: string | string[] };
+        const inputs = Array.isArray(body.input) ? body.input : [body.input];
+        return HttpResponse.json({
+          object: "list",
+          model: "text-embedding-3-small",
+          data: inputs.map((_, index) => ({
+            object: "embedding",
+            index,
+            embedding: responseVector,
+          })),
+          usage: { prompt_tokens: 1, total_tokens: 1 },
+        });
+      }),
+    );
+  });
+
+  afterEach(async () => {
+    await manager?.stop();
+    await service?.shutdown();
+    manager = undefined;
+    service = undefined;
+    for (const store of stores.splice(0)) await store.shutdown();
+    vi.unstubAllEnvs();
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  function openStore(): DocumentStore {
+    const store = new DocumentStore(path.join(directory, "documents.db"), settings);
+    stores.push(store);
+    return store;
+  }
+
+  function page(
+    content = "previous searchable content",
+    url = "https://docs.example.com/page.md",
+  ): ScrapeResult {
+    return {
+      url,
+      title: content,
+      textContent: content,
+      contentType: "text/markdown",
+      sourceContentType: "text/markdown",
+      etag: content,
+      lastModified: "Wed, 01 Jan 2025 00:00:00 GMT",
+      links: [],
+      errors: [],
+      chunks: [{ content, types: ["text"], section: { level: 0, path: [] } }],
+    };
+  }
+
+  function snapshot() {
+    const db = new Database(path.join(directory, "documents.db"));
+    sqliteVec.load(db);
+    try {
+      return {
+        pages: db.prepare("SELECT * FROM pages ORDER BY id").all(),
+        chunks: db.prepare("SELECT * FROM documents ORDER BY id").all(),
+        vectors: db
+          .prepare("SELECT rowid, embedding FROM documents_vec ORDER BY rowid")
+          .all(),
+      };
+    } finally {
+      db.close();
+    }
+  }
+
+  it.each(["model", "credentials"])(
+    "rejects required startup without %s",
+    async (missing) => {
+      if (missing === "model") settings.app.embeddingModel = "";
+      else vi.stubEnv("OPENAI_API_KEY", "");
+      await expect(openStore().initialize()).rejects.toThrow();
     },
-    60000,
   );
+
+  it("probes a known model once before declaring vector readiness", async () => {
+    await openStore().initialize();
+    expect(requests).toBe(1);
+    expect(logger.info).toHaveBeenCalledWith(
+      "✅ Vector search enabled: openai:text-embedding-3-small (1536d)",
+    );
+  });
+
+  it("rejects an offline cached provider and preserves indexed vectors", async () => {
+    const initial = openStore();
+    await initial.initialize();
+    await initial.addDocuments("library", "1.0", 0, page());
+    const previous = snapshot();
+    rejectEmbedding = true;
+    const next = openStore();
+    await expect(next.initialize()).rejects.toThrow();
+    expect(next.getActiveEmbeddingConfig()).toBeNull();
+    expect(snapshot()).toEqual(previous);
+  });
+
+  it.each([
+    { name: "empty", vector: [] },
+    { name: "nonfinite", vector: Array(1536).fill(null) },
+    { name: "wrong dimension", vector: [0.1, 0.2] },
+  ])("rejects $name probe vectors", async ({ vector }) => {
+    responseVector = vector;
+    await expect(openStore().initialize()).rejects.toThrow();
+  });
+
+  it("bounds a required known-model startup probe by the initialization timeout", async () => {
+    server.use(
+      http.get(
+        "https://docs.example.com/llms.txt",
+        () => new HttpResponse(null, { status: 404 }),
+      ),
+      http.post("https://embeddings.example.com/v1/embeddings", async () => {
+        await delay(200);
+        return HttpResponse.json({ data: [{ embedding: Array(1536).fill(0.01) }] });
+      }),
+    );
+    await expect(openStore().initialize()).rejects.toThrow(/timed out/);
+  });
+
+  it("keeps optional FTS available without credentials", async () => {
+    settings.embeddings.required = false;
+    vi.stubEnv("OPENAI_API_KEY", "");
+    const store = openStore();
+    await store.initialize();
+    await store.addDocuments("library", "1.0", 0, page());
+    expect(await store.findByContent("library", "1.0", "searchable", 5)).toHaveLength(1);
+    expect(requests).toBe(0);
+  });
+
+  it("rejects query transport failure rather than returning FTS success", async () => {
+    const store = openStore();
+    await store.initialize();
+    await store.addDocuments("library", "1.0", 0, page());
+    rejectEmbedding = true;
+    await expect(
+      store.findByContent("library", "1.0", "searchable", 5),
+    ).rejects.toThrow();
+  });
+
+  it("rolls back chunks, vectors and validators when an insert fails mid-replacement", async () => {
+    const store = openStore();
+    await store.initialize();
+    await store.addDocuments("library", "1.0", 0, page());
+    const previous = snapshot();
+    const db = new Database(path.join(directory, "documents.db"));
+    db.exec(
+      "CREATE TRIGGER reject_replacement BEFORE INSERT ON documents WHEN NEW.sort_order = 1 BEGIN SELECT RAISE(ABORT, 'controlled insert failure'); END",
+    );
+    try {
+      const replacement = page("replacement");
+      replacement.chunks.push({
+        content: "second chunk",
+        types: ["text"],
+        section: { level: 0, path: [] },
+      });
+      await expect(
+        store.addDocuments("library", "1.0", 0, replacement),
+      ).rejects.toThrow();
+      expect(snapshot()).toEqual(previous);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps the previous page after a later embedding batch fails", async () => {
+    const store = openStore();
+    await store.initialize();
+    await store.addDocuments("library", "1.0", 0, page());
+    const previous = snapshot();
+    // A new store uses the configured batch boundary through its public constructor.
+    settings.embeddings.batchSize = 1;
+    const next = openStore();
+    await next.initialize();
+    const replacement = page("replacement");
+    replacement.chunks.push({
+      content: "second chunk",
+      types: ["text"],
+      section: { level: 0, path: [] },
+    });
+    failRequest = requests + 2;
+    await expect(next.addDocuments("library", "1.0", 0, replacement)).rejects.toThrow();
+    expect(snapshot()).toEqual(previous);
+  });
+
+  it("rejects invalid document embeddings before replacing searchable content", async () => {
+    const store = openStore();
+    await store.initialize();
+    await store.addDocuments("library", "1.0", 0, page());
+    const previous = snapshot();
+    responseVector = [];
+    await expect(
+      store.addDocuments("library", "1.0", 0, page("replacement")),
+    ).rejects.toThrow();
+    expect(snapshot()).toEqual(previous);
+  });
+
+  it("rejects a missing batch embedding without replacing old content", async () => {
+    const store = openStore();
+    await store.initialize();
+    await store.addDocuments("library", "1.0", 0, page());
+    const previous = snapshot();
+    server.use(
+      http.get(
+        "https://docs.example.com/llms.txt",
+        () => new HttpResponse(null, { status: 404 }),
+      ),
+      http.post("https://embeddings.example.com/v1/embeddings", () =>
+        HttpResponse.json({
+          object: "list",
+          data: [],
+          model: "text-embedding-3-small",
+          usage: { prompt_tokens: 0, total_tokens: 0 },
+        }),
+      ),
+    );
+    await expect(
+      store.addDocuments("library", "1.0", 0, page("replacement")),
+    ).rejects.toThrow();
+    expect(snapshot()).toEqual(previous);
+  });
+
+  it("preserves vectors if the provider fails while resolving a model change", async () => {
+    const store = openStore();
+    await store.initialize();
+    await store.addDocuments("library", "1.0", 0, page());
+    const previous = snapshot();
+    settings.app.embeddingModel = "openai:text-embedding-ada-002";
+    const changed = openStore();
+    await expect(changed.initialize()).rejects.toThrow();
+    rejectEmbedding = true;
+    await expect(changed.resolveModelChange()).rejects.toThrow();
+    expect(snapshot()).toEqual(previous);
+  });
+
+  it("validates a cached model with an explicitly padded database dimension", async () => {
+    settings.embeddings.vectorDimension = 3072;
+    markVectorDimensionSource(settings, true);
+    await openStore().initialize();
+    await expect(openStore().initialize()).resolves.toBeUndefined();
+    expect(requests).toBe(2);
+  });
+
+  it("reuses the successful unknown-model dimension probe", async () => {
+    settings.app.embeddingModel = "openai:unknown-readiness-test-model";
+    responseVector = Array(384).fill(0.01);
+    const store = openStore();
+    await store.initialize();
+    expect(requests).toBe(1);
+    await store.addDocuments("library", "1.0", 0, page());
+    expect(snapshot().vectors).toHaveLength(1);
+  });
+
+  it("rolls back a redirected empty replacement when page insertion fails", async () => {
+    const store = openStore();
+    await store.initialize();
+    await store.addDocuments("library", "1.0", 0, page());
+    const previous = snapshot();
+    const pageId = (previous.pages[0] as { id: number }).id;
+    const db = new Database(path.join(directory, "documents.db"));
+    db.exec(
+      "CREATE TRIGGER reject_page BEFORE INSERT ON pages BEGIN SELECT RAISE(ABORT, 'controlled page failure'); END",
+    );
+    try {
+      await expect(
+        store.addEmptyPage(
+          "library",
+          "1.0",
+          0,
+          {
+            url: "https://docs.example.com/redirected.md",
+            title: "Empty",
+            sourceContentType: "text/markdown",
+            contentType: "text/markdown",
+            etag: "empty",
+            lastModified: null,
+          },
+          pageId,
+        ),
+      ).rejects.toThrow();
+      expect(snapshot()).toEqual(previous);
+      db.exec("DROP TRIGGER reject_page");
+      await store.addEmptyPage(
+        "library",
+        "1.0",
+        0,
+        {
+          url: "https://docs.example.com/redirected.md",
+          title: "Empty",
+          sourceContentType: "text/markdown",
+          contentType: "text/markdown",
+          etag: "empty",
+          lastModified: null,
+        },
+        pageId,
+      );
+      const empty = snapshot();
+      expect(empty.pages).toHaveLength(1);
+      expect(empty.pages[0]).toMatchObject({
+        url: "https://docs.example.com/redirected.md",
+        etag: "empty",
+      });
+      expect(empty.chunks).toEqual([]);
+      expect(empty.vectors).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("fails a child persistence error even when fetch errors are ignored", async () => {
+    settings.scraper.maxConcurrency = 1;
+    const eventBus = new EventBusService();
+    service = new DocumentManagementService(eventBus, settings);
+    await service.initialize();
+    manager = new PipelineManager(service, eventBus, {
+      appConfig: settings,
+      recoverJobs: false,
+    });
+    await manager.start();
+    server.use(
+      http.get(
+        "https://docs.example.com/root.md",
+        () =>
+          new HttpResponse("# Root\n\n[Child](./child.md)", {
+            headers: { "content-type": "text/markdown" },
+          }),
+      ),
+      http.get(
+        "https://docs.example.com/child.md",
+        () =>
+          new HttpResponse("# Child\n\nChild content.", {
+            headers: { "content-type": "text/markdown" },
+          }),
+      ),
+    );
+    failRequest = requests + 2;
+    const id = await manager.enqueueScrapeJob("library", "1.0", {
+      url: "https://docs.example.com/root.md",
+      library: "library",
+      version: "1.0",
+      ignoreErrors: true,
+      scope: "hostname",
+      maxPages: 5,
+      maxDepth: 1,
+      scrapeMode: ScrapeMode.Fetch,
+    });
+    await expect(manager.waitForJobCompletion(id)).rejects.toThrow();
+    expect((await manager.getJob(id))?.status).toBe(PipelineJobStatus.FAILED);
+    expect(snapshot().pages).toHaveLength(1);
+    expect(snapshot().pages[0]).toMatchObject({
+      url: "https://docs.example.com/root.md",
+    });
+  });
+
+  it.each(["progress", "completion", "terminal failure"])(
+    "fails the job when %s cannot be persisted",
+    async (stage) => {
+      const eventBus = new EventBusService();
+      service = new DocumentManagementService(eventBus, settings);
+      await service.initialize();
+      manager = new PipelineManager(service, eventBus, {
+        appConfig: settings,
+        recoverJobs: false,
+      });
+      await manager.start();
+      server.use(
+        http.get(
+          "https://docs.example.com/page.md",
+          () =>
+            new HttpResponse("# Page\n\nSearchable text.", {
+              headers: { "content-type": "text/markdown" },
+            }),
+        ),
+      );
+      const db = new Database(path.join(directory, "documents.db"));
+      db.exec(
+        stage === "progress"
+          ? "CREATE TRIGGER reject_progress BEFORE UPDATE OF progress_pages ON versions BEGIN SELECT RAISE(ABORT, 'controlled progress failure'); END"
+          : stage === "completion"
+            ? "CREATE TRIGGER reject_completion BEFORE UPDATE OF status ON versions WHEN NEW.status = 'completed' BEGIN SELECT RAISE(ABORT, 'controlled completion failure'); END"
+            : "CREATE TRIGGER reject_terminal BEFORE UPDATE OF status ON versions WHEN NEW.status IN ('completed', 'failed') BEGIN SELECT RAISE(ABORT, 'controlled terminal failure'); END",
+      );
+      try {
+        const id = await manager.enqueueScrapeJob("library", "1.0", {
+          url: "https://docs.example.com/page.md",
+          library: "library",
+          version: "1.0",
+          maxDepth: 0,
+          scrapeMode: ScrapeMode.Fetch,
+        });
+        await expect(manager.waitForJobCompletion(id)).rejects.toThrow();
+        expect((await manager.getJob(id))?.status).toBe(PipelineJobStatus.FAILED);
+        expect(db.prepare("SELECT status FROM versions").get()).toEqual({
+          status: stage === "terminal failure" ? "running" : "failed",
+        });
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it("settles cancellation without completing or replacing the stored page", async () => {
+    const eventBus = new EventBusService();
+    service = new DocumentManagementService(eventBus, settings);
+    await service.initialize();
+    await service.addScrapeResult("library", "1.0", 0, page());
+    manager = new PipelineManager(service, eventBus, {
+      appConfig: settings,
+      recoverJobs: false,
+    });
+    await manager.start();
+    const previous = snapshot();
+    let markStarted = () => {};
+    let releaseFetch = () => {};
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseFetch = resolve;
+    });
+    server.use(
+      http.get("https://docs.example.com/page.md", async () => {
+        markStarted();
+        await release;
+        return new HttpResponse("# Replacement", {
+          headers: { "content-type": "text/markdown" },
+        });
+      }),
+    );
+    const id = await manager.enqueueScrapeJob("library", "1.0", {
+      url: "https://docs.example.com/page.md",
+      library: "library",
+      version: "1.0",
+      isRefresh: true,
+      maxDepth: 0,
+      scrapeMode: ScrapeMode.Fetch,
+    });
+    await started;
+    await manager.cancelJob(id);
+    releaseFetch();
+    // Cancellation settles successfully by the public wait API contract.
+    await expect(manager.waitForJobCompletion(id)).resolves.toBeUndefined();
+    expect((await manager.getJob(id))?.status).toBe(PipelineJobStatus.CANCELLED);
+    expect(snapshot()).toEqual(previous);
+  });
+
+  it("preserves a failed refresh and failed retry before replacing the page exactly once", async () => {
+    const eventBus = new EventBusService();
+    service = new DocumentManagementService(eventBus, settings);
+    await service.initialize();
+    manager = new PipelineManager(service, eventBus, {
+      appConfig: settings,
+      recoverJobs: false,
+    });
+    await manager.start();
+    let body = "# Original\n\nPrevious searchable text.";
+    let etag = "previous-validator";
+    server.use(
+      http.get(
+        "https://docs.example.com/page.md",
+        () =>
+          new HttpResponse(body, {
+            headers: { "content-type": "text/markdown", etag },
+          }),
+      ),
+    );
+    const initialId = await manager.enqueueScrapeJob("library", "1.0", {
+      url: "https://docs.example.com/page.md",
+      library: "library",
+      version: "1.0",
+      ignoreErrors: true,
+      maxPages: 1,
+      maxDepth: 0,
+      scrapeMode: ScrapeMode.Fetch,
+    });
+    await manager.waitForJobCompletion(initialId);
+    const previous = snapshot();
+    const previousSearch = await service.searchStore("library", "1.0", "searchable");
+    body = "# Replacement\n\nUpdated searchable text.";
+    etag = "new-validator";
+    rejectEmbedding = true;
+    const failedId = await manager.enqueueRefreshJob("library", "1.0");
+    await expect(manager.waitForJobCompletion(failedId)).rejects.toThrow();
+    expect((await manager.getJob(failedId))?.status).toBe(PipelineJobStatus.FAILED);
+    expect(snapshot()).toEqual(previous);
+    const retryId = await manager.enqueueRefreshJob("library", "1.0");
+    await expect(manager.waitForJobCompletion(retryId)).rejects.toThrow();
+    expect((await manager.getJob(retryId))?.status).toBe(PipelineJobStatus.FAILED);
+    expect(snapshot()).toEqual(previous);
+    rejectEmbedding = false;
+    expect(await service.searchStore("library", "1.0", "searchable")).toEqual(
+      previousSearch,
+    );
+    const successId = await manager.enqueueRefreshJob("library", "1.0");
+    await manager.waitForJobCompletion(successId);
+    expect((await manager.getJob(successId))?.status).toBe(PipelineJobStatus.COMPLETED);
+    const replacement = snapshot();
+    expect(replacement.pages).toHaveLength(1);
+    expect(replacement.pages[0]).toMatchObject({ etag: "new-validator" });
+    expect(replacement.chunks).toHaveLength(1);
+    expect(replacement.chunks[0]).toMatchObject({
+      content: expect.stringContaining("Updated searchable"),
+    });
+    expect(replacement.vectors).toHaveLength(1);
+  });
 });

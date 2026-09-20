@@ -193,7 +193,7 @@ describe("PipelineWorker", () => {
     expect(mockCallbacks.onJobError).not.toHaveBeenCalled();
   });
 
-  it("should call onJobError and continue if store.addScrapeResult fails", async () => {
+  it("should reject if store.addScrapeResult fails", async () => {
     const mockProcessed: ScrapeResult = {
       textContent: "doc1",
       url: "url1",
@@ -227,8 +227,8 @@ describe("PipelineWorker", () => {
     // Simulate addScrapeResult failing
     (mockStore.addScrapeResult as Mock).mockRejectedValue(storeError);
 
-    // Execute the job - should complete despite the error
-    await expect(worker.executeJob(mockJob, mockCallbacks)).resolves.toBeUndefined();
+    // Persistence failure must reach the job manager.
+    await expect(worker.executeJob(mockJob, mockCallbacks)).rejects.toThrow(storeError);
 
     // Verify scrape was called
     expect(mockScraperService.scrape).toHaveBeenCalledOnce();

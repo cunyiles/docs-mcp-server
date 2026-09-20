@@ -8,21 +8,39 @@ import { FixedDimensionEmbeddings } from "./FixedDimensionEmbeddings";
 
 // Mock embedding models that produce vectors of different sizes
 class MockBaseEmbeddings extends Embeddings {
-  constructor(private dimension: number) {
+  constructor(
+    private dimension: number,
+    private value = 1,
+  ) {
     super({});
   }
 
   async embedQuery(_text: string): Promise<number[]> {
-    return Array(this.dimension).fill(1);
+    return Array(this.dimension).fill(this.value);
   }
 
   async embedDocuments(_documents: string[]): Promise<number[][]> {
-    return [Array(this.dimension).fill(1)];
+    return [Array(this.dimension).fill(this.value)];
   }
 }
 
 describe("FixedDimensionEmbeddings", () => {
   const targetDimension = defaults.embeddings.vectorDimension;
+
+  test.each([
+    { name: "empty", dimension: 0, value: 1 },
+    { name: "NaN", dimension: 1, value: Number.NaN },
+    { name: "infinite", dimension: 1, value: Number.POSITIVE_INFINITY },
+  ])("rejects $name provider vectors before padding", async ({ dimension, value }) => {
+    const wrapper = new FixedDimensionEmbeddings(
+      new MockBaseEmbeddings(dimension, value),
+      targetDimension,
+      "test:model",
+      true,
+    );
+    await expect(wrapper.embedQuery("test")).rejects.toThrow();
+    await expect(wrapper.embedDocuments(["test"])).rejects.toThrow();
+  });
 
   test("should pass through vectors of correct dimension", async () => {
     const base = new MockBaseEmbeddings(targetDimension);

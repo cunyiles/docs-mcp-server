@@ -310,7 +310,16 @@ export class PipelineManager implements IPipeline {
     );
 
     // Update database status to QUEUED
-    await this.updateJobStatus(job, PipelineJobStatus.QUEUED);
+    try {
+      await this.updateJobStatus(job, PipelineJobStatus.QUEUED);
+    } catch (error) {
+      this.jobQueue = this.jobQueue.filter((queuedId) => queuedId !== jobId);
+      job.error = error instanceof Error ? error : new Error(String(error));
+      await this.updateJobStatus(job, PipelineJobStatus.FAILED, job.error.message);
+      job.finishedAt = new Date();
+      job.rejectCompletion(job.error);
+      throw error;
+    }
 
     // Trigger processing if manager is running
     if (this.isRunning) {
@@ -326,8 +335,8 @@ export class PipelineManager implements IPipeline {
    * Enqueues a refresh job for an existing library version by re-scraping all pages
    * and using ETag comparison to skip unchanged content.
    *
-   * If the version was never completed (interrupted or failed scrape), performs a
-   * full re-scrape from scratch instead of a refresh to ensure completeness.
+   * Incomplete versions with stored pages are refreshed unconditionally so a
+   * retry preserves searchable content while rediscovering missing pages.
    */
   async enqueueRefreshJob(
     library: string,
@@ -355,17 +364,13 @@ export class PipelineManager implements IPipeline {
         throw new Error(`Library ID ${versionInfo.library_id} not found`);
       }
 
-      // If the version is not completed, it means the previous scrape was interrupted
-      // or failed. In this case, perform a full re-scrape instead of a refresh.
-      if (versionInfo && versionInfo.status !== VersionStatus.COMPLETED) {
-        logger.info(
-          `⚠️  Version ${library}@${normalizedVersion || "latest"} has status "${versionInfo.status}". Performing full re-scrape instead of refresh.`,
-        );
+      // Existing pages remain a valid refresh baseline after a failed run.
+      // Only an empty, incomplete version needs to restart from stored options.
+      const pages = await this.store.getPagesByVersionId(versionId);
+      const incomplete = versionInfo.status !== VersionStatus.COMPLETED;
+      if (incomplete && pages.length === 0) {
         return this.enqueueJobWithStoredOptions(library, normalizedVersion, options);
       }
-
-      // Get all pages for this version with their ETags and depths
-      const pages = await this.store.getPagesByVersionId(versionId);
 
       // Debug: Log first page to see what data we're getting
       if (pages.length > 0) {
@@ -393,17 +398,24 @@ export class PipelineManager implements IPipeline {
       // stored validator to a resource that never issued it. `content_url` is
       // NULL for pages retrieved from their own address, including every row
       // written before representations were resolved to a shared identity.
-      const initialQueue = pages.map((page) => ({
+      const initialQueue: NonNullable<ScraperOptions["initialQueue"]> = pages.map((page) => ({
         url: page.content_url ?? page.url,
         depth: page.depth ?? 0, // Use original depth, fallback to 0 for old data
         pageId: page.id,
-        etag: page.etag,
+        etag: incomplete ? undefined : page.etag,
         // Carried so a withdrawn representation does not read as a withdrawn
         // page: the scraper asks this address before deleting anything.
         identityUrl: page.content_url ? page.url : undefined,
       }));
       // Get stored scraper options to retrieve the source URL and other options
       const storedOptions = await this.store.getScraperOptions(versionId);
+      if (
+        incomplete &&
+        storedOptions?.sourceUrl &&
+        !initialQueue.some((item) => item.url === storedOptions.sourceUrl)
+      ) {
+        initialQueue.unshift({ url: storedOptions.sourceUrl, depth: 0 });
+      }
 
       // Build scraper options with initialQueue and isRefresh flag
       const scraperOptions = {
@@ -624,9 +636,6 @@ export class PipelineManager implements IPipeline {
       }
 
       this.activeWorkers.add(jobId);
-      await this.updateJobStatus(job, PipelineJobStatus.RUNNING);
-      job.startedAt = new Date();
-
       // Start the actual job execution asynchronously
       this._runJob(job).catch(async (error) => {
         // Catch unexpected errors during job setup/execution not handled by _runJob itself
@@ -662,6 +671,8 @@ export class PipelineManager implements IPipeline {
     const worker = new PipelineWorker(this.store, this.scraperService);
 
     try {
+      await this.updateJobStatus(job, PipelineJobStatus.RUNNING);
+      job.startedAt = new Date();
       // Delegate the actual work to the worker
       // The worker works with InternalPipelineJob, we convert to public when needed
       await worker.executeJob(job, {
@@ -773,22 +784,21 @@ export class PipelineManager implements IPipeline {
 
       // Store scraper options when job is first queued
       if (newStatus === PipelineJobStatus.QUEUED && job.scraperOptions) {
-        try {
-          // Pass the complete scraper options (DocumentStore will filter runtime fields)
-          await this.store.storeScraperOptions(versionId, job.scraperOptions);
-          logger.debug(
-            `Stored scraper options for ${job.library}@${job.version}: ${job.sourceUrl}`,
-          );
-        } catch (optionsError) {
-          // Log warning but don't fail the job - options storage is not critical
-          logger.warn(
-            `⚠️  Failed to store scraper options for job ${job.id}: ${optionsError}`,
-          );
-        }
+        await this.store.storeScraperOptions(versionId, job.scraperOptions);
+        logger.debug(
+          `Stored scraper options for ${job.library}@${job.version}: ${job.sourceUrl}`,
+        );
       }
     } catch (error) {
       logger.error(`❌ Failed to update database status for job ${job.id}: ${error}`);
-      // Don't throw - we don't want to break the pipeline for database issues
+      // Terminal failure/cancellation must settle even if the database is unavailable.
+      if (
+        newStatus !== PipelineJobStatus.FAILED &&
+        newStatus !== PipelineJobStatus.CANCELLED &&
+        newStatus !== PipelineJobStatus.CANCELLING
+      ) {
+        throw error;
+      }
     }
 
     // Emit events to EventBusService
@@ -827,7 +837,7 @@ export class PipelineManager implements IPipeline {
         );
       } catch (error) {
         logger.error(`❌ Failed to update database progress for job ${job.id}: ${error}`);
-        // Don't throw - we don't want to break the pipeline for database issues
+        throw error;
       }
     }
 

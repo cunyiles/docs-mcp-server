@@ -154,4 +154,13 @@ When you change the embedding model or vector dimension after initial setup, exi
 
 ### Vector Dimension Override
 
-The vector dimension defaults to the model's native dimension (e.g., 1536 for `text-embedding-3-small`). For unknown OpenAI-compatible models, the server detects the native dimension with a startup probe on first successful initialization, stores that detected size in database metadata, and reuses it on later startups for the same model without probing again. You can override it with `embeddings.vectorDimension` in the config file or `DOCS_MCP_EMBEDDINGS_VECTOR_DIMENSION` as an environment variable. The value must be a positive integer (minimum 1).
+The vector dimension defaults to the model's native dimension (e.g., 1536 for `text-embedding-3-small`). For unknown OpenAI-compatible models, the server detects the native dimension with a startup probe on first successful initialization, stores that detected size in database metadata, and reuses it on later startups for the same model. Required mode still probes the provider on every startup. You can override it with `embeddings.vectorDimension` in the config file or `DOCS_MCP_EMBEDDINGS_VECTOR_DIMENSION` as an environment variable. The value must be a positive integer (minimum 1).
+
+
+### Required Embedding Readiness
+
+Set `embeddings.required: true` in configuration or `DOCS_MCP_EMBEDDINGS_REQUIRED=true` to require semantic search. Startup rejects missing model configuration, missing credentials, an unreachable provider, or an invalid probe vector. The probe uses `embeddings.initTimeoutMs` even when the model dimension is known or cached. A successful dimension-detection probe also serves as the readiness probe.
+
+After successful initialization the server logs `Vector search enabled` with the model and vector dimension. Required mode emits this line after its provider probe succeeds. The probe verifies availability at startup; later embedding and query failures still surface as errors.
+
+The default is `false`, which keeps full-text-only operation available without a model or credentials. Embedding or database persistence errors fail indexing jobs in either mode. Fetch `ignoreErrors` does not suppress persistence failures. Page replacement commits content, vectors, metadata, and response validators together after embeddings succeed. A failed refresh keeps the previous page searchable, and refresh retries preserve existing pages while fetching incomplete versions unconditionally. An explicit clean scrape still clears the selected version before crawling.

@@ -1,5 +1,5 @@
 import { Embeddings } from "@langchain/core/embeddings";
-import { DimensionError } from "../errors";
+import { DimensionError, StoreError } from "../errors";
 
 /**
  * Wrapper around an Embeddings implementation that ensures vectors have a fixed dimension.
@@ -26,6 +26,13 @@ export class FixedDimensionEmbeddings extends Embeddings {
    * @throws {DimensionError} If vector is too large and provider doesn't support MRL
    */
   private normalizeVector(vector: number[]): number[] {
+    if (
+      !Array.isArray(vector) ||
+      vector.length === 0 ||
+      !vector.every((value) => typeof value === "number" && Number.isFinite(value))
+    ) {
+      throw new StoreError("Embedding provider returned an invalid vector");
+    }
     const dimension = vector.length;
 
     if (dimension > this.targetDimension) {

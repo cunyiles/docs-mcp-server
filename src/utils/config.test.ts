@@ -63,6 +63,15 @@ describe("Configuration Loading", () => {
     vi.resetAllMocks();
   });
 
+  it("defaults to optional embeddings and parses required mode from environment", () => {
+    delete process.env.DOCS_MCP_EMBEDDINGS_REQUIRED;
+    expect(loadConfig({}, {}).embeddings.required).toBe(false);
+    process.env.DOCS_MCP_EMBEDDINGS_REQUIRED = "true";
+    expect(loadConfig({}, {}).embeddings.required).toBe(true);
+    process.env.DOCS_MCP_EMBEDDINGS_REQUIRED = "false";
+    expect(loadConfig({}, {}).embeddings.required).toBe(false);
+  });
+
   describe("Integration & E2E Scenarios", () => {
     it("should load system defaults and WRITE back when no config provided", () => {
       const config = loadConfig({}, {}); // No args -> Default System Path
