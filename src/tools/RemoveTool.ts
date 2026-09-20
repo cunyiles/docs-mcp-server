@@ -26,7 +26,7 @@ export class RemoveTool {
 
   /**
    * Executes the tool to remove the specified library version completely.
-   * Aborts any QUEUED/RUNNING job for the same library+version before deleting.
+   * Aborts active jobs and waits for cancellation for the same library+version before deleting.
    * Removes all documents, the version record, and the library if no other versions exist.
    */
   async execute(args: RemoveToolArgs): Promise<{ message: string }> {
@@ -46,7 +46,7 @@ export class RemoveTool {
       // Validate that the library exists before attempting removal
       await this.documentManagementService.validateLibraryExists(library);
 
-      // Abort any QUEUED or RUNNING job for this library+version
+      // Wait for every active worker, including jobs already cancelling.
       const allJobs = await this.pipeline.getJobs();
       const normalizedLibrary = normalizeLibraryName(library);
       const normalizedVersion = normalizeVersionLabel(version);
@@ -55,7 +55,8 @@ export class RemoveTool {
           normalizeLibraryName(job.library) === normalizedLibrary &&
           normalizeVersionLabel(job.version) === normalizedVersion &&
           (job.status === PipelineJobStatus.QUEUED ||
-            job.status === PipelineJobStatus.RUNNING),
+            job.status === PipelineJobStatus.RUNNING ||
+            job.status === PipelineJobStatus.CANCELLING),
       );
 
       for (const job of jobs) {

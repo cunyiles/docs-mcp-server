@@ -201,6 +201,46 @@ describe("RemoveTool", () => {
     expect(result.message).toContain("Successfully removed libY@2.0.0");
   });
 
+  it("waits for an already cancelling job before deleting its version", async () => {
+    let finishWorker = () => {};
+    const workerCompletion = new Promise<void>((resolve) => {
+      finishWorker = resolve;
+    });
+    const mockLocalPipeline = {
+      getJobs: vi.fn().mockResolvedValue([
+        {
+          id: "job-cancelling",
+          library: "example",
+          version: "rolling",
+          status: "cancelling",
+        },
+      ]),
+      cancelJob: vi.fn().mockResolvedValue(undefined),
+      waitForJobCompletion: vi.fn().mockReturnValue(workerCompletion),
+    } as unknown as IPipeline;
+    mockDocService.validateLibraryExists.mockResolvedValue(undefined);
+    mockDocService.removeVersion.mockResolvedValue(undefined);
+    const removal = new RemoveTool(mockDocService, mockLocalPipeline).execute({
+      library: "example",
+      version: "rolling",
+    });
+
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(mockDocService.removeVersion).not.toHaveBeenCalled();
+      expect(mockLocalPipeline.waitForJobCompletion).toHaveBeenCalledWith(
+        "job-cancelling",
+      );
+    } finally {
+      finishWorker();
+      await removal;
+    }
+    expect(mockDocService.removeVersion).toHaveBeenCalledExactlyOnceWith(
+      "example",
+      "rolling",
+    );
+  });
+
   it("should abort and wait for jobs for unversioned (empty string) before deletion", async () => {
     const mockLocalPipeline = {
       getJobs: vi.fn().mockResolvedValue([
