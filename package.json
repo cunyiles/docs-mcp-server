@@ -156,7 +156,7 @@
     "node": ">=22"
   },
   "overrides": {
-    "npm": "10.9.3"
+    "npm": "11.20.0"
   },
   "lint-staged": {
     "*.{js,ts,jsx,tsx,json,md}": [
