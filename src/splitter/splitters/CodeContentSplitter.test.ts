@@ -8,6 +8,34 @@ describe("CodeContentSplitter", () => {
   } satisfies ContentSplitterOptions;
   const splitter = new CodeContentSplitter(options);
 
+  it("keeps four-backtick examples balanced when their body contains triple fences", async () => {
+    const body = Array.from(
+      { length: 12 },
+      (_, i) => `Example ${i}:\n\`\`\`js\n    run(${i});\n\`\`\`\n`,
+    ).join("");
+    const chunks = await new CodeContentSplitter({ chunkSize: 100 }).split(
+      `\`\`\`\`markdown\n${body}\`\`\`\``,
+    );
+    for (const chunk of chunks) {
+      expect(chunk.startsWith("````markdown\n")).toBe(true);
+      expect(chunk.endsWith("````")).toBe(true);
+      expect(chunk.length).toBeLessThanOrEqual(100);
+    }
+    expect(chunks.map((chunk) => chunk.slice("````markdown\n".length, -4)).join("")).toBe(
+      body,
+    );
+  });
+
+  it("bounds a single long code line without losing any characters", async () => {
+    const code = `    const value = "${"x".repeat(300)}";`;
+    const chunks = await new CodeContentSplitter({ chunkSize: 100 }).split(
+      `\`\`\`js\n${code}\n\`\`\``,
+    );
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const chunk of chunks) expect(chunk.length).toBeLessThanOrEqual(100);
+    expect(chunks.map((chunk) => chunk.slice(6, -4)).join("")).toBe(code);
+  });
+
   it("should preserve language in code blocks", async () => {
     const code = `function test() {
   console.log("Hello");

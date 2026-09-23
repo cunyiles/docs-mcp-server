@@ -502,37 +502,31 @@ export class DocumentManagementService {
   /**
    * Completely removes a library version and all associated documents.
    * Also removes the library if no other versions remain.
-   * If the specified version doesn't exist but the library exists with no versions, removes the library.
+   * An unversioned removal also cleans up a library with no version records.
+   * Missing targets throw without removing other versions.
    * @param library Library name
    * @param version Version string (null/undefined for unversioned)
    */
   async removeVersion(library: string, version?: string | null): Promise<void> {
     const normalizedVersion = normalizeVersionLabel(version);
-    logger.debug(`Removing version: ${library}@${normalizedVersion || "latest"}`);
+    logger.debug(`Removing version: ${library}@${normalizedVersion || "unversioned"}`);
 
     const result = await this.store.removeVersion(library, normalizedVersion, true);
 
+    if (!result.versionDeleted && !result.libraryDeleted) {
+      await this.validateLibraryExists(library);
+      throw new VersionNotFoundInStoreError(
+        library,
+        normalizedVersion,
+        await this.listAvailableLabels(library),
+      );
+    }
+
     logger.info(`🗑️ Removed ${result.documentsDeleted} documents`);
-
-    if (result.versionDeleted && result.libraryDeleted) {
-      logger.info(`🗑️ Completely removed library ${library} (was last version)`);
-    } else if (result.versionDeleted) {
-      logger.info(`🗑️ Removed version ${library}@${normalizedVersion || "latest"}`);
+    if (result.libraryDeleted) {
+      logger.info(`🗑️ Completely removed library ${library}`);
     } else {
-      // Version not found - check if library exists but is empty (has no versions)
-      logger.warn(`⚠️  Version ${library}@${normalizedVersion || "latest"} not found`);
-
-      const libraryRecord = await this.store.getLibrary(library);
-      if (libraryRecord) {
-        // Library exists - check if it has any versions
-        const versions = await this.store.queryUniqueVersions(library);
-        if (versions.length === 0) {
-          // Library exists but has no versions - delete the library itself
-          logger.info(`🗑️ Library ${library} has no versions, removing library record`);
-          await this.store.deleteLibrary(libraryRecord.id);
-          logger.info(`🗑️ Completely removed library ${library} (had no versions)`);
-        }
-      }
+      logger.info(`🗑️ Removed version ${library}@${normalizedVersion || "unversioned"}`);
     }
 
     await this.compactAfterDelete();

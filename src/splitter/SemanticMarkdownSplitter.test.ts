@@ -3,6 +3,20 @@ import { describe, expect, it } from "vitest";
 import { SemanticMarkdownSplitter } from "./SemanticMarkdownSplitter";
 
 describe("SemanticMarkdownSplitter", () => {
+  it("bounds large code examples with many backtick runs without overflowing the stack", async () => {
+    const chunks = await new SemanticMarkdownSplitter(1000, 2000).splitText(
+      `~~~txt\n${"`x".repeat(130000)}\n~~~`,
+    );
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) => chunk.content.length <= 2000)).toBe(true);
+    expect(
+      chunks
+        .map((chunk) => chunk.content)
+        .join("")
+        .match(/x/g)?.length,
+    ).toBe(130000 + chunks.length);
+  });
+
   it("preserves complex raw HTML table facts alongside Markdown and code", async () => {
     const splitter = new SemanticMarkdownSplitter(100, 5000);
     const chunks = await splitter.splitText(`# Reservation policy

@@ -3,6 +3,7 @@ import { SemanticMarkdownSplitter } from "../../splitter/SemanticMarkdownSplitte
 import type { AppConfig } from "../../utils/config";
 import { MimeTypeUtils } from "../../utils/mimeTypeUtils";
 import type { ContentFetcher, RawContent } from "../fetcher/types";
+import { EmbeddedImageMiddleware } from "../middleware/EmbeddedImageMiddleware";
 import { MarkdownLinkExtractorMiddleware } from "../middleware/MarkdownLinkExtractorMiddleware";
 import { MarkdownMetadataExtractorMiddleware } from "../middleware/MarkdownMetadataExtractorMiddleware";
 import type { ContentProcessorMiddleware, MiddlewareContext } from "../middleware/types";
@@ -27,6 +28,7 @@ export class MarkdownPipeline extends BasePipeline {
 
     this.middleware = [
       new MarkdownMetadataExtractorMiddleware(),
+      new EmbeddedImageMiddleware(),
       new MarkdownLinkExtractorMiddleware(),
     ];
 

@@ -10,8 +10,18 @@ const removeFn = vi.fn(async () => {});
 vi.mock("../../store", () => ({
   createDocumentManagement: vi.fn(async () => ({
     shutdown: vi.fn(),
-    removeAllDocuments: removeFn,
+    removeAllDocuments: vi.fn(),
+    removeVersion: removeFn,
+    validateLibraryExists: vi.fn(async () => {}),
   })),
+}));
+const pipelineMock = {
+  start: vi.fn(async () => {}),
+  stop: vi.fn(async () => {}),
+  getJobs: vi.fn(async () => []),
+};
+vi.mock("../../pipeline", () => ({
+  PipelineFactory: { createPipeline: vi.fn(async () => pipelineMock) },
 }));
 vi.mock("../utils", () => ({
   getGlobalOptions: vi.fn(() => ({ storePath: undefined })),
@@ -47,7 +57,7 @@ describe("remove command", () => {
     stdoutWriteSpy.mockRestore();
   });
 
-  it("calls removeAllDocuments", async () => {
+  it("removes the version record through the shared removal tool", async () => {
     const parser = yargs().scriptName("test");
     createRemoveCommand(parser);
 

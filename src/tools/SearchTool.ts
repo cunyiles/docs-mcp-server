@@ -64,8 +64,8 @@ export class SearchTool {
       );
     }
 
-    // When exactMatch is true, version must be specified and not 'latest'
-    if (exactMatch && (!version || version === "latest")) {
+    // An explicit empty label selects unversioned documentation in exact mode.
+    if (exactMatch && (version === undefined || version === "latest")) {
       // Get available *detailed* versions for error message
       await this.docService.validateLibraryExists(library);
       // Fetch detailed versions using listLibraries and find the specific library
@@ -83,7 +83,7 @@ export class SearchTool {
 
     // Only for the log line and the exactMatch path; resolution takes `version`
     // as given so an omitted version stays distinct from a literal "latest".
-    const resolvedVersion = version || "latest";
+    const resolvedVersion = version ?? "latest";
 
     logger.info(
       `🔍 Searching ${library}@${resolvedVersion} for: ${query}${exactMatch ? " (exact match)" : ""}`,

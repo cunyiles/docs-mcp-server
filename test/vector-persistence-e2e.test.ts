@@ -606,7 +606,8 @@ describe("Embedding readiness and atomic replacement", () => {
     expect((await manager.getJob(id))?.status).toBe(PipelineJobStatus.FAILED);
     expect(snapshot().pages).toHaveLength(1);
     expect(snapshot().pages[0]).toMatchObject({
-      url: "https://docs.example.com/root.md",
+      url: "https://docs.example.com/root",
+      content_url: "https://docs.example.com/root.md",
     });
   });
 

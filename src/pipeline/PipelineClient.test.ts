@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventBusService } from "../events/EventBusService";
 import { EventType } from "../events/types";
 import { PipelineClient } from "./PipelineClient";
@@ -94,6 +94,71 @@ describe("PipelineClient", () => {
   });
 
   describe("waitForJobCompletion", () => {
+    beforeEach(() => {
+      mockClient.getJob.query.mockResolvedValue({ id: "job-123", status: "running" });
+    });
+    afterEach(() => vi.useRealTimers());
+
+    it("observes cancellation completed before the waiter subscribes", async () => {
+      vi.useFakeTimers();
+      mockClient.getJob.query.mockResolvedValue({ id: "job-123", status: "cancelled" });
+      let completed = false;
+      const waiting = client.waitForJobCompletion("job-123").then(() => {
+        completed = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      try {
+        expect(completed).toBe(true);
+      } finally {
+        eventBus.emit(EventType.JOB_STATUS_CHANGE, {
+          id: "job-123",
+          status: "cancelled",
+        } as never);
+        await waiting;
+      }
+    });
+
+    it("polls cancellation completion without a remote event proxy", async () => {
+      vi.useFakeTimers();
+      mockClient.getJob.query
+        .mockResolvedValueOnce({ id: "job-123", status: "cancelling" })
+        .mockResolvedValue({ id: "job-123", status: "cancelled" });
+      let completed = false;
+      const waiting = client.waitForJobCompletion("job-123").then(() => {
+        completed = true;
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+      try {
+        expect(completed).toBe(true);
+      } finally {
+        eventBus.emit(EventType.JOB_STATUS_CHANGE, {
+          id: "job-123",
+          status: "cancelled",
+        } as never);
+        await waiting;
+      }
+    });
+
+    it("fails safely when cancellation never finishes", async () => {
+      vi.useFakeTimers();
+      mockClient.getJob.query.mockResolvedValue({ id: "job-123", status: "cancelling" });
+      let failure: unknown;
+      const waiting = client.waitForJobCompletion("job-123").catch((error) => {
+        failure = error;
+      });
+      await vi.advanceTimersByTimeAsync(60000);
+      try {
+        expect(failure).toBeInstanceOf(Error);
+        expect((failure as Error).message).toContain("cancellation");
+      } finally {
+        eventBus.emit(EventType.JOB_STATUS_CHANGE, {
+          id: "job-123",
+          status: "cancelled",
+        } as never);
+        await waiting;
+      }
+    });
+
     it("should resolve when job completes successfully via event bus", async () => {
       const jobId = "job-123";
 

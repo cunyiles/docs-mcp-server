@@ -80,7 +80,7 @@ npx @arabold/docs-mcp-server@latest fetch-url https://react.dev/reference/react/
 | `list` | List all indexed libraries and their versions |
 | `find-version <library>` | Resolve the best matching version for a library |
 | `refresh <library>` | Re-scrape an existing library, skipping unchanged pages |
-| `remove <library>` | Delete a library or version from the index |
+| `remove <library>` | Delete the unversioned bucket, or one exact version with `--version`; remove the library when its last version is deleted |
 | `compact` | Reclaim unused SQLite pages and shrink the store. Takes an exclusive lock, may block searches, and needs temporary disk space while it runs. |
 
 Run `npx @arabold/docs-mcp-server@latest --help` for the full command reference.

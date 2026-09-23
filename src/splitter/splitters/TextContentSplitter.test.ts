@@ -1,3 +1,5 @@
+import remarkParse from "remark-parse";
+import { unified } from "unified";
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import { logger } from "../../utils/logger";
 import { hasOpenFenceAtEnd } from "./fenceState";
@@ -12,6 +14,37 @@ describe("TextContentSplitter", () => {
     chunkSize: 100,
   } satisfies ContentSplitterOptions;
   const splitter = new TextContentSplitter(options);
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 0.5])(
+    "rejects invalid chunk size %s before splitting",
+    (chunkSize) => {
+      expect(() => new TextContentSplitter({ chunkSize })).toThrow(RangeError);
+    },
+  );
+
+  it("preserves CRLF code content across bounded fences", async () => {
+    const body = Array.from({ length: 12 }, (_, i) => `    run(${i});\r\n`).join("");
+    const chunks = await new TextContentSplitter({ chunkSize: 100 }).split(
+      `\`\`\`js\r\n${body}\`\`\`\r\n`,
+    );
+    for (const chunk of chunks) expect(chunk.length).toBeLessThanOrEqual(100);
+    expect(
+      chunks
+        .map((chunk) => chunk.replace(/^```js\r\n/, "").replace(/```(?:\r?\n)?$/, ""))
+        .join(""),
+    ).toBe(body);
+  });
+
+  it("keeps a long quoted code line inside its blockquote after splitting", async () => {
+    const content = `> \`\`\`js\n> ${"x".repeat(170)}\n> \`\`\``;
+    const chunks = await new TextContentSplitter({ chunkSize: 70 }).split(content);
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeLessThanOrEqual(70);
+      const tree = unified().use(remarkParse).parse(chunk);
+      expect(tree.children.every((node) => node.type === "blockquote")).toBe(true);
+    }
+    expect(chunks.join("").match(/x/g)).toHaveLength(170);
+  });
 
   it("should split on paragraph boundaries when possible", async () => {
     const text = `First paragraph with some content.
@@ -126,6 +159,37 @@ Line 6 with multiple blank lines above`;
     }
   });
 
+  it("preserves whitespace when word boundaries are required", async () => {
+    const text = "  first  second\tthird    fourth  fifth  sixth seventh   ";
+    const chunks = await new TextContentSplitter({ chunkSize: 20 }).split(text);
+    expect(chunks.join("")).toBe(text);
+    expect(Math.max(...chunks.map((chunk) => chunk.length))).toBeLessThanOrEqual(20);
+  });
+
+  it("splits long tokens losslessly instead of bypassing the bound", async () => {
+    const text = "x".repeat(301);
+    const chunks = await new TextContentSplitter({ chunkSize: 100 }).split(text);
+    expect(chunks.join("")).toBe(text);
+    expect(Math.max(...chunks.map((chunk) => chunk.length))).toBeLessThanOrEqual(100);
+  });
+
+  it("retains four-backtick fences around examples containing triple backticks", async () => {
+    const body = Array.from(
+      { length: 30 },
+      (_, i) => `  example ${i}\n\n\`\`\`js\n    run();\n\`\`\`\n`,
+    ).join("");
+    const chunks = await new TextContentSplitter({ chunkSize: 120 }).split(
+      `\`\`\`\`markdown\n${body}\`\`\`\``,
+    );
+    expect(Math.max(...chunks.map((chunk) => chunk.length))).toBeLessThanOrEqual(120);
+    for (const chunk of chunks) expect(hasOpenFenceAtEnd(chunk)).toBe(false);
+    expect(
+      chunks
+        .map((chunk) => chunk.replace(/^`{4}markdown\n/, "").replace(/`{4}$/, ""))
+        .join(""),
+    ).toBe(body);
+  });
+
   describe("fence balance", () => {
     let warnSpy: Mock<typeof logger.warn>;
 
@@ -161,7 +225,7 @@ Line 6 with multiple blank lines above`;
       expect(chunks.join("")).toBe(text);
     });
 
-    it("emits a single oversize chunk plus a warning when a fenced block alone exceeds chunkSize", async () => {
+    it("bounds oversized fences while preserving every indented code line", async () => {
       const splitter = new TextContentSplitter({ chunkSize: 120 });
       const lines = Array.from(
         { length: 20 },
@@ -177,12 +241,8 @@ Line 6 with multiple blank lines above`;
         expect(fenceCount(c) % 2).toBe(0);
         expect(hasOpenFenceAtEnd(c)).toBe(false);
       }
-      // At least one chunk should be over the limit and a warning emitted.
-      const oversize = chunks.filter((c) => c.length > 120);
-      expect(oversize.length).toBeGreaterThanOrEqual(1);
-      expect(warnSpy).toHaveBeenCalled();
-      const warnText = warnSpy.mock.calls.map((c) => String(c[0])).join("\n");
-      expect(warnText).toContain("TextContentSplitter");
+      expect(Math.max(...chunks.map((chunk) => chunk.length))).toBeLessThanOrEqual(120);
+      for (const line of lines.split("\n")) expect(chunks.join("\n")).toContain(line);
     });
 
     it("handles multiple fenced blocks separated by prose without breaking any fence", async () => {

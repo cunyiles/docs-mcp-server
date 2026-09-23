@@ -1,4 +1,4 @@
-import { logger } from "../utils";
+import { TextContentSplitter } from "./splitters/TextContentSplitter";
 import type { Chunk, DocumentSplitter, SectionContentType } from "./types";
 
 /**
@@ -41,18 +41,23 @@ export class GreedySplitter implements DocumentSplitter {
    * context with semantic coherence.
    */
   async splitText(markdown: string, contentType?: string): Promise<Chunk[]> {
-    const initialChunks = await this.baseSplitter.splitText(markdown, contentType);
+    const baseChunks = await this.baseSplitter.splitText(markdown, contentType);
+    const initialChunks: Chunk[] = [];
+    const boundedSplitter = new TextContentSplitter({ chunkSize: this.maxChunkSize });
+    for (const chunk of baseChunks) {
+      if (chunk.content.length <= this.maxChunkSize) {
+        initialChunks.push(chunk);
+        continue;
+      }
+      const parts = await boundedSplitter.split(chunk.content);
+      initialChunks.push(
+        ...parts.map((content) => ({ ...this.cloneChunk(chunk), content })),
+      );
+    }
     const concatenatedChunks: Chunk[] = [];
     let currentChunk: Chunk | null = null;
 
     for (const nextChunk of initialChunks) {
-      // Warn if a chunk from the base splitter already exceeds max size
-      if (nextChunk.content.length > this.maxChunkSize) {
-        logger.warn(
-          `⚠ Chunk from base splitter exceeds max size: ${nextChunk.content.length} > ${this.maxChunkSize}`,
-        );
-      }
-
       if (currentChunk) {
         // Account for the newline separator that may be added when merging (see merge below)
         const separatorSize = currentChunk.content.endsWith("\n") ? 0 : 1;

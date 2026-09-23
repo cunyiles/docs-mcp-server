@@ -510,7 +510,9 @@ ${r.content}\n`,
           .string()
           .trim()
           .optional()
-          .describe("Library version (optional, removes latest if omitted)."),
+          .describe(
+            "Exact version label; omitted or empty removes only unversioned documentation.",
+          ),
       },
       {
         title: "Remove Library Documentation",

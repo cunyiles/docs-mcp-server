@@ -58,8 +58,8 @@ interface RawSearchResult extends DbChunk {
   source_content_type?: string | null;
   content_type?: string | null;
   // Search scoring fields
-  vec_score?: number;
-  fts_score?: number;
+  vec_score?: number | null;
+  fts_score?: number | null;
 }
 
 interface RankedResult extends RawSearchResult {
@@ -231,7 +231,7 @@ export class DocumentStore {
 
     // Sort by vector scores and assign ranks
     results
-      .filter((r) => r.vec_score !== undefined)
+      .filter((r) => r.vec_score != null)
       .sort((a, b) => (b.vec_score ?? 0) - (a.vec_score ?? 0))
       .forEach((result, index) => {
         vecRanks.set(Number(result.id), index + 1);
@@ -239,7 +239,7 @@ export class DocumentStore {
 
     // Sort by BM25 scores and assign ranks
     results
-      .filter((r) => r.fts_score !== undefined)
+      .filter((r) => r.fts_score != null)
       .sort((a, b) => (b.fts_score ?? 0) - (a.fts_score ?? 0))
       .forEach((result, index) => {
         ftsRanks.set(Number(result.id), index + 1);
@@ -1757,17 +1757,16 @@ export class DocumentStore {
    * Creates embeddings for an array of texts with automatic retry logic for size-related errors.
    * If a batch fails due to size limits:
    * - Batches with multiple texts are split in half and retried recursively
-   * - Single texts that are too large are truncated and retried once
+   * - An oversized single text fails intact; persisting a prefix embedding would
+   *   misrepresent the complete stored chunk.
    *
    * @param texts Array of texts to embed
    * @param isRetry Internal flag to prevent duplicate warning logs
-   * @param hasTruncatedSingleText Whether a single text has already been truncated once
    * @returns Array of embedding vectors
    */
   private async embedDocumentsWithRetry(
     texts: string[],
     isRetry = false,
-    hasTruncatedSingleText = false,
   ): Promise<number[][]> {
     if (texts.length === 0) {
       return [];
@@ -1797,41 +1796,14 @@ export class DocumentStore {
           }
 
           const [firstEmbeddings, secondEmbeddings] = await Promise.all([
-            this.embedDocumentsWithRetry(firstHalf, true, false),
-            this.embedDocumentsWithRetry(secondHalf, true, false),
+            this.embedDocumentsWithRetry(firstHalf, true),
+            this.embedDocumentsWithRetry(secondHalf, true),
           ]);
 
           return [...firstEmbeddings, ...secondEmbeddings];
-        } else {
-          // Single text that's too large - split in half and retry
-          if (hasTruncatedSingleText) {
-            throw error;
-          }
-
-          const text = texts[0];
-          const midpoint = Math.floor(text.length / 2);
-          const firstHalf = text.substring(0, midpoint);
-
-          // Only log once for the original text
-          if (!isRetry) {
-            logger.warn(
-              `⚠️  Single text exceeded embedding size limit (${text.length} chars).`,
-            );
-          }
-
-          try {
-            // Recursively retry with first half only (mark as retry to prevent duplicate logs)
-            // This preserves the beginning of the text which typically contains the most important context
-            const embedding = await this.embedDocumentsWithRetry([firstHalf], true, true);
-            return embedding;
-          } catch (retryError) {
-            // If even split text fails, log error and throw
-            logger.error(
-              `❌ Failed to embed even after splitting. Original length: ${text.length}`,
-            );
-            throw retryError;
-          }
         }
+        // Batch subdivision preserves every input. A single rejected input has
+        // no safe smaller retry: retain the previous page and surface the error.
       }
 
       // Not a size error, re-throw
@@ -2283,8 +2255,19 @@ export class DocumentStore {
       ) as { id: number; library_id: number } | undefined;
 
       if (!versionResult) {
-        // Version doesn't exist, return zero counts
-        return { documentsDeleted: 0, versionDeleted: false, libraryDeleted: false };
+        // Only an unversioned request can clean up an empty library. Check all
+        // version rows inside the delete so an intentional unversioned bucket
+        // or a concurrently created version can never be mistaken for emptiness.
+        const libraryDeleted =
+          removeLibraryIfEmpty && normalizedVersion === ""
+            ? this.db
+                .prepare(
+                  `DELETE FROM libraries WHERE name = ?
+                   AND NOT EXISTS (SELECT 1 FROM versions WHERE library_id = libraries.id)`,
+                )
+                .run(normalizedLibrary).changes > 0
+            : false;
+        return { documentsDeleted: 0, versionDeleted: false, libraryDeleted };
       }
 
       const { id: versionId, library_id: libraryId } = versionResult;
@@ -2411,7 +2394,12 @@ export class DocumentStore {
         const overfetchLimit = Math.max(1, limit * this.searchOverfetchFactor);
 
         // Use a multiplier to cast a wider net in vector search before final ranking
-        const vectorSearchK = overfetchLimit * this.vectorSearchMultiplier;
+        // sqlite-vec v0.1.9 rejects k > SQLITE_VEC_VEC0_K_MAX (4096).
+        // https://github.com/asg017/sqlite-vec/blob/v0.1.9/sqlite-vec.c#L6667
+        const vectorSearchK = Math.min(
+          4096,
+          overfetchLimit * this.vectorSearchMultiplier,
+        );
 
         const stmt = this.db.prepare(`
           WITH vec_distances AS MATERIALIZED (
@@ -2455,12 +2443,16 @@ export class DocumentStore {
             d.id,
             d.content,
             d.metadata,
+            d.page_id,
+            d.sort_order,
+            d.created_at,
+            p.content_url,
             p.url as url,
             p.title as title,
             p.source_content_type as source_content_type,
             p.content_type as content_type,
-            COALESCE(1 / (1 + v.vec_distance), 0) as vec_score,
-            COALESCE(-MIN(f.fts_score, 0), 0) as fts_score
+            1.0 / (1 + v.vec_distance) as vec_score,
+            -MIN(f.fts_score, 0) as fts_score
           FROM candidates c
           JOIN documents d ON d.id = c.id
           JOIN pages p ON d.page_id = p.id
@@ -2512,6 +2504,10 @@ export class DocumentStore {
             d.id,
             d.content,
             d.metadata,
+            d.page_id,
+            d.sort_order,
+            d.created_at,
+            p.content_url,
             p.url as url,
             p.title as title,
             p.source_content_type as source_content_type,

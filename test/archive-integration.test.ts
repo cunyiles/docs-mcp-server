@@ -3,7 +3,7 @@ import path from "node:path";
 import { ZipArchive } from "archiver";
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { LocalFileStrategy } from "../src/scraper/strategies/LocalFileStrategy";
-import type { AppConfig } from "../src/utils/config";
+import { loadConfig } from "../src/utils/config";
 import { FetchStatus } from "../src/scraper/fetcher/types";
 
 const FIXTURES_DIR = path.join(__dirname, "fixtures");
@@ -30,38 +30,17 @@ describe("LocalFileStrategy - Archive Integration", () => {
       archive.finalize();
     });
 
-    const config = {
-      scraper: {
-        maxPages: 100,
-        timeout: 10000,
-        userAgent: "test-bot",
-        allowedDomains: [],
-        document: {
-            maxSize: 1024 * 1024,
-        },
-        security: {
-          network: {
-            mode: "open",
-            allowPrivateNetworks: false,
-            allowedHosts: [],
-            allowedCidrs: [],
-            allowInvalidTls: false,
-          },
-          fileAccess: {
-            mode: "unrestricted",
-            allowedRoots: [],
-            followSymlinks: true,
-            includeHidden: true,
-          },
-        },
-      },
-      splitter: {
-          maxChunkSize: 1000,
-          json: {
-              maxNestingDepth: 10,
-          }
-      },
-    } as unknown as AppConfig;
+    const config = loadConfig();
+    config.scraper.maxPages = 100;
+    config.scraper.document.maxSize = 1024 * 1024;
+    config.scraper.security.fileAccess = {
+      mode: "unrestricted",
+      allowedRoots: [],
+      followSymlinks: true,
+      includeHidden: true,
+    };
+    config.splitter.maxChunkSize = 1000;
+    config.splitter.preferredChunkSize = 500;
     strategy = new LocalFileStrategy(config);
   });
 

@@ -398,15 +398,17 @@ export class PipelineManager implements IPipeline {
       // stored validator to a resource that never issued it. `content_url` is
       // NULL for pages retrieved from their own address, including every row
       // written before representations were resolved to a shared identity.
-      const initialQueue: NonNullable<ScraperOptions["initialQueue"]> = pages.map((page) => ({
-        url: page.content_url ?? page.url,
-        depth: page.depth ?? 0, // Use original depth, fallback to 0 for old data
-        pageId: page.id,
-        etag: incomplete ? undefined : page.etag,
-        // Carried so a withdrawn representation does not read as a withdrawn
-        // page: the scraper asks this address before deleting anything.
-        identityUrl: page.content_url ? page.url : undefined,
-      }));
+      const initialQueue: NonNullable<ScraperOptions["initialQueue"]> = pages.map(
+        (page) => ({
+          url: page.content_url ?? page.url,
+          depth: page.depth ?? 0, // Use original depth, fallback to 0 for old data
+          pageId: page.id,
+          etag: incomplete ? undefined : page.etag,
+          // Carried so a withdrawn representation does not read as a withdrawn
+          // page: the scraper asks this address before deleting anything.
+          identityUrl: page.content_url ? page.url : undefined,
+        }),
+      );
       // Get stored scraper options to retrieve the source URL and other options
       const storedOptions = await this.store.getScraperOptions(versionId);
       if (

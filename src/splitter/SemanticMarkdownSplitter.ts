@@ -324,7 +324,14 @@ export class SemanticMarkdownSplitter implements DocumentSplitter {
         const code = element.querySelector("code");
         const language = code?.className.replace("language-", "") || "";
         const content = code?.textContent || element.textContent || "";
-        const markdown = `${"```"}${language}\n${content}\n${"```"}`;
+        // An example can itself contain triple backticks. Use a longer
+        // outer fence so its contents cannot accidentally close the block.
+        let longestRun = 0;
+        for (const run of content.matchAll(/`+/g)) {
+          longestRun = Math.max(longestRun, run[0].length);
+        }
+        const fence = "`".repeat(Math.max(3, longestRun + 1));
+        const markdown = `${fence}${language}\n${content}${content.endsWith("\n") ? "" : "\n"}${fence}`;
 
         currentSection = {
           level: currentSection.level,

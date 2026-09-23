@@ -60,6 +60,33 @@ describe("HtmlPipeline", () => {
     }
   });
 
+  it("removes embedded HTML image payloads while preserving alt text and escaped code", async () => {
+    const result = await new HtmlPipeline(appConfig).process(
+      {
+        content:
+          '<html><body><main><h1>Images</h1><p>A figure: <img alt="Useful diagram" src="data:image/png;base64,QUJDREVGRw=="></p><p><img alt="Encoded diagram" src="data:image/png%3Bbase64,SElKS0w="></p><img alt="Remote" src="https://example.com/figure.png"><pre><code>&lt;img src="data:image/png;base64,Y29kZQ=="&gt;</code></pre></main></body></html>',
+        mimeType: "text/html",
+        source: "https://example.com/images",
+        status: FetchStatus.SUCCESS,
+      },
+      {} as ScraperOptions,
+    );
+    for (const text of [
+      result.textContent,
+      result.chunks?.map((chunk) => chunk.content).join("\n") ?? "",
+    ]) {
+      expect(text).not.toContain("QUJDREVGRw==");
+      expect(text).not.toContain("SElKS0w=");
+      for (const preserved of [
+        "Useful diagram",
+        "Encoded diagram",
+        "https://example.com/figure.png",
+        "Y29kZQ==",
+      ])
+        expect(text).toContain(preserved);
+    }
+  });
+
   it("canProcess returns true for text/html", () => {
     const pipeline = new HtmlPipeline(appConfig);
     expect(pipeline.canProcess("text/html")).toBe(true);
