@@ -2393,10 +2393,11 @@ export class DocumentStore {
         // Apply overfetch factor to both vector and FTS searches for better recall
         const overfetchLimit = Math.max(1, limit * this.searchOverfetchFactor);
 
-        // Use a multiplier to cast a wider net in vector search before final ranking
+        // Use the same expanded window for both channels. Cutting FTS earlier
+        // drops real lexical evidence from otherwise strong semantic candidates.
         // sqlite-vec v0.1.9 rejects k > SQLITE_VEC_VEC0_K_MAX (4096).
         // https://github.com/asg017/sqlite-vec/blob/v0.1.9/sqlite-vec.c#L6667
-        const vectorSearchK = Math.min(
+        const hybridCandidateLimit = Math.min(
           4096,
           overfetchLimit * this.vectorSearchMultiplier,
         );
@@ -2468,10 +2469,10 @@ export class DocumentStore {
           libraryId,
           versionId,
           JSON.stringify(embedding),
-          vectorSearchK,
+          hybridCandidateLimit,
           versionId,
           ftsQuery,
-          overfetchLimit,
+          hybridCandidateLimit,
         ) as RawSearchResult[];
 
         // Apply RRF ranking with configurable weights

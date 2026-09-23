@@ -3179,6 +3179,43 @@ describe.each([true, false])("Search row contract (embeddings=%s)", (vectors) =>
   });
 
   if (vectors) {
+    it("retains lexical evidence across the expanded hybrid candidate window", async () => {
+      await store.shutdown();
+      const narrowConfig = structuredClone(config);
+      narrowConfig.search.overfetchFactor = 1;
+      narrowConfig.search.vectorMultiplier = 10;
+      store = new DocumentStore(":memory:", narrowConfig);
+      await store.initialize();
+      // @ts-expect-error Accessing only the mocked external embedding provider
+      const provider = store.embeddings;
+      if (!provider) throw new Error("Expected mocked embeddings to be enabled");
+      const vector = (angle: number) =>
+        Array.from({ length: 1536 }, (_, i) =>
+          i === 0 ? Math.cos(angle) : i === 1 ? Math.sin(angle) : 0,
+        );
+      vi.mocked(provider.embedQuery).mockResolvedValue(vector(0));
+      const pages = [
+        { slug: "balanced", angle: 0, text: `needle ${"explanation ".repeat(50)}` },
+        { slug: "semantic-a", angle: 0.2, text: "related concept" },
+        { slug: "semantic-b", angle: 0.3, text: "another related concept" },
+        { slug: "lexical-a", angle: 0.9, text: "needle ".repeat(20) },
+        { slug: "lexical-b", angle: 1.1, text: "needle ".repeat(10) },
+      ];
+      for (const page of pages) {
+        vi.mocked(provider.embedDocuments).mockResolvedValueOnce([vector(page.angle)]);
+        await store.addDocuments(
+          "lib",
+          "1",
+          0,
+          createScrapeResult("Guide", `https://example.com/${page.slug}`, page.text),
+        );
+      }
+      const [hit] = await store.findByContent("lib", "1", "needle", 1);
+      expect(hit.url).toBe("https://example.com/balanced");
+      expect(hit.vec_rank).toBe(1);
+      expect(hit.fts_rank).toBe(3);
+    });
+
     it("keeps expanded candidate searches within the native vector k limit", async () => {
       await store.shutdown();
       const expanded = structuredClone(config);

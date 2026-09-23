@@ -394,10 +394,10 @@ Settings for the hybrid search ranking system.
 
 | Option | Default | Description |
 |:-------|:--------|:------------|
-| `overfetchFactor` | `2` | Multiplier on the search limit for FTS overfetch (fetches `limit * overfetchFactor` candidates). |
+| `overfetchFactor` | `2` | Base multiplier for hybrid candidate retrieval and context-assembly overfetch. |
 | `weightVec` | `1` | RRF weight for vector search results. |
 | `weightFts` | `1` | RRF weight for full-text search results. |
-| `vectorMultiplier` | `10` | Additional multiplier for vector search candidate count (`limit * overfetchFactor * vectorMultiplier`). |
+| `vectorMultiplier` | `10` | Additional multiplier for both hybrid retrieval channels (`limit * overfetchFactor * vectorMultiplier`, capped at 4096 per channel). The existing key is retained for compatibility. |
 
 ### Database (`db`)
 
