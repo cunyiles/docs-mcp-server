@@ -331,6 +331,21 @@ export class PipelineManager implements IPipeline {
     return jobId;
   }
 
+  /** Looks up an exact existing target without creating library or version rows. */
+  private async getExistingVersionId(library: string, version: string): Promise<number> {
+    const normalizedLibrary = normalizeLibraryName(library);
+    const libraries = await this.store.listLibraries();
+    const target = libraries
+      .find((entry) => entry.library === normalizedLibrary)
+      ?.versions.find((entry) => entry.ref.version === version);
+    if (!target) {
+      throw new PipelineStateError(
+        `Version ${version || "(unversioned)"} for library ${normalizedLibrary} not found in store. Use scrape_docs to index it first.`,
+      );
+    }
+    return target.id;
+  }
+
   /**
    * Enqueues a refresh job for an existing library version by re-scraping all pages
    * and using ETag comparison to skip unchanged content.
@@ -347,10 +362,7 @@ export class PipelineManager implements IPipeline {
 
     try {
       // First, check if the library version exists
-      const versionId = await this.store.ensureVersion({
-        library,
-        version: normalizedVersion,
-      });
+      const versionId = await this.getExistingVersionId(library, normalizedVersion);
 
       // Check the version's status to detect incomplete scrapes
       const versionInfo = await this.store.getVersionById(versionId);
@@ -457,10 +469,7 @@ export class PipelineManager implements IPipeline {
 
     try {
       // Get the version ID to retrieve stored options
-      const versionId = await this.store.ensureVersion({
-        library,
-        version: normalizedVersion,
-      });
+      const versionId = await this.getExistingVersionId(library, normalizedVersion);
       const stored = await this.store.getScraperOptions(versionId);
 
       if (!stored) {

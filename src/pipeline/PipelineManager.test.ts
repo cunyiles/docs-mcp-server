@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vite
 import { EventBusService } from "../events/EventBusService";
 import type { ScraperProgressEvent } from "../scraper/types";
 import type { DocumentManagementService } from "../store/DocumentManagementService";
+import { type LibrarySummary, VersionStatus } from "../store/types";
 import { ListJobsTool } from "../tools/ListJobsTool";
 import { type AppConfig, loadConfig } from "../utils/config";
 import { PipelineManager } from "./PipelineManager";
@@ -32,6 +33,21 @@ vi.mock("../store/DocumentManagementService");
 vi.mock("../scraper/ScraperService");
 vi.mock("./PipelineWorker");
 vi.mock("../events/EventBusService");
+
+function existingLibrary(library: string, version: string, id = 1): LibrarySummary {
+  return {
+    library,
+    versions: [
+      {
+        id,
+        ref: { library, version },
+        status: VersionStatus.COMPLETED,
+        counts: { documents: 0, uniqueUrls: 0 },
+        indexedAt: null,
+      },
+    ],
+  };
+}
 
 describe("PipelineManager", () => {
   let mockStore: Partial<DocumentManagementService>;
@@ -121,7 +137,7 @@ describe("PipelineManager", () => {
       updateVersionProgress: vi.fn().mockResolvedValue(undefined), // For progress tests
       getVersionsByStatus: vi.fn().mockResolvedValue([]),
       // Refresh job methods
-      ensureVersion: vi.fn().mockResolvedValue(1),
+      listLibraries: vi.fn().mockResolvedValue([existingLibrary("test-lib", "1.0.0")]),
       getPagesByVersionId: vi.fn().mockResolvedValue([]),
       getScraperOptions: vi.fn().mockResolvedValue(null),
       getVersionById: vi.fn().mockResolvedValue({
@@ -525,9 +541,12 @@ describe("PipelineManager", () => {
         updateVersionStatus: vi.fn().mockResolvedValue(undefined),
         updateVersionProgress: vi.fn().mockResolvedValue(undefined),
         getVersionsByStatus: vi.fn().mockResolvedValue(mockInterruptedVersions),
-        ensureVersion: vi.fn().mockImplementation(({ library }) => {
-          return Promise.resolve(library === "test-lib" ? 1 : 2);
-        }),
+        listLibraries: vi
+          .fn()
+          .mockResolvedValue([
+            existingLibrary("test-lib", "1.0.0", 1),
+            existingLibrary("interrupted-lib", "2.0.0", 2),
+          ]),
         getVersionById: vi.fn().mockImplementation((id: number) => {
           return Promise.resolve({
             id,
@@ -663,7 +682,9 @@ describe("PipelineManager", () => {
         { id: 3, url: "https://example.com/page3", depth: 1, etag: "etag3" },
       ];
 
-      (mockStore.ensureVersion as Mock).mockResolvedValue(456);
+      (mockStore.listLibraries as Mock).mockResolvedValue([
+        existingLibrary("test-lib", "1.0.0", 456),
+      ]);
       (mockStore.getPagesByVersionId as Mock).mockResolvedValue(mockPages);
       (mockStore.getScraperOptions as Mock).mockResolvedValue({
         sourceUrl: "https://example.com",
@@ -699,7 +720,9 @@ describe("PipelineManager", () => {
         { id: 1, url: "https://example.com/page1", depth: 0, etag: "etag1" },
       ];
 
-      (mockStore.ensureVersion as Mock).mockResolvedValue(789);
+      (mockStore.listLibraries as Mock).mockResolvedValue([
+        existingLibrary("unversioned-lib", "", 789),
+      ]);
       (mockStore.getPagesByVersionId as Mock).mockResolvedValue(mockPages);
       (mockStore.getScraperOptions as Mock).mockResolvedValue({
         sourceUrl: "https://example.com",
@@ -720,7 +743,9 @@ describe("PipelineManager", () => {
 
     it("should throw error when refreshing a version with no pages", async () => {
       // Setup: Mock empty pages array
-      (mockStore.ensureVersion as Mock).mockResolvedValue(999);
+      (mockStore.listLibraries as Mock).mockResolvedValue([
+        existingLibrary("empty-lib", "1.0.0", 999),
+      ]);
       (mockStore.getPagesByVersionId as Mock).mockResolvedValue([]);
 
       // Action & Assertion: Should throw with clear error message
@@ -731,7 +756,9 @@ describe("PipelineManager", () => {
 
     it("should throw error when refreshing latest library with no pages", async () => {
       // Setup: Mock empty pages array for latest library
-      (mockStore.ensureVersion as Mock).mockResolvedValue(888);
+      (mockStore.listLibraries as Mock).mockResolvedValue([
+        existingLibrary("empty-lib", "", 888),
+      ]);
       (mockStore.getPagesByVersionId as Mock).mockResolvedValue([]);
 
       // Action & Assertion: Should throw with clear error message including "latest"
@@ -746,7 +773,9 @@ describe("PipelineManager", () => {
         { id: 11, url: "https://example.com/shallow", depth: 0, etag: null },
       ];
 
-      (mockStore.ensureVersion as Mock).mockResolvedValue(111);
+      (mockStore.listLibraries as Mock).mockResolvedValue([
+        existingLibrary("depth-test", "1.0.0", 111),
+      ]);
       (mockStore.getPagesByVersionId as Mock).mockResolvedValue(mockPages);
       (mockStore.getScraperOptions as Mock).mockResolvedValue({
         sourceUrl: "https://example.com",
@@ -789,7 +818,9 @@ describe("PipelineManager", () => {
         { id: 2, url: "https://example.com/page2", depth: 1, etag: "etag2" },
       ];
 
-      (mockStore.ensureVersion as Mock).mockResolvedValue(555);
+      (mockStore.listLibraries as Mock).mockResolvedValue([
+        existingLibrary("incomplete-lib", "1.0.0", 555),
+      ]);
       (mockStore.getVersionById as Mock).mockResolvedValue({
         id: 555,
         library_id: 1,
@@ -820,7 +851,9 @@ describe("PipelineManager", () => {
 
     it("should perform full re-scrape for queued versions during refresh", async () => {
       // Setup: Mock a queued version (never started)
-      (mockStore.ensureVersion as Mock).mockResolvedValue(666);
+      (mockStore.listLibraries as Mock).mockResolvedValue([
+        existingLibrary("queued-lib", "2.0.0", 666),
+      ]);
       (mockStore.getVersionById as Mock).mockResolvedValue({
         id: 666,
         library_id: 2,
@@ -855,7 +888,9 @@ describe("PipelineManager", () => {
         { id: 1, url: "https://example.com/page1", depth: 0, etag: "etag1" },
       ];
 
-      (mockStore.ensureVersion as Mock).mockResolvedValue(777);
+      (mockStore.listLibraries as Mock).mockResolvedValue([
+        existingLibrary("completed-lib", "3.0.0", 777),
+      ]);
       (mockStore.getVersionById as Mock).mockResolvedValue({
         id: 777,
         library_id: 3,
@@ -909,7 +944,9 @@ describe("PipelineManager", () => {
         { id: 1, url: "https://example.com/#/guide", depth: 0, etag: "etag1" },
       ];
 
-      (mockStore.ensureVersion as Mock).mockResolvedValue(888);
+      (mockStore.listLibraries as Mock).mockResolvedValue([
+        existingLibrary("test-lib", "1.0.0", 888),
+      ]);
       (mockStore.getPagesByVersionId as Mock).mockResolvedValue(mockPages);
       (mockStore.getScraperOptions as Mock).mockResolvedValue({
         sourceUrl: "https://example.com/#/guide",
@@ -927,7 +964,9 @@ describe("PipelineManager", () => {
         { id: 1, url: "https://example.com/#/guide", depth: 0, etag: "etag1" },
       ];
 
-      (mockStore.ensureVersion as Mock).mockResolvedValue(889);
+      (mockStore.listLibraries as Mock).mockResolvedValue([
+        existingLibrary("test-lib", "1.0.0", 889),
+      ]);
       (mockStore.getPagesByVersionId as Mock).mockResolvedValue(mockPages);
       (mockStore.getScraperOptions as Mock).mockResolvedValue({
         sourceUrl: "https://example.com/#/guide",
@@ -947,7 +986,9 @@ describe("PipelineManager", () => {
         { id: 1, url: "https://example.com/#/guide", depth: 0, etag: "etag1" },
       ];
 
-      (mockStore.ensureVersion as Mock).mockResolvedValue(890);
+      (mockStore.listLibraries as Mock).mockResolvedValue([
+        existingLibrary("test-lib", "1.0.0", 890),
+      ]);
       (mockStore.getPagesByVersionId as Mock).mockResolvedValue(mockPages);
       (mockStore.getScraperOptions as Mock).mockResolvedValue({
         sourceUrl: "https://example.com/#/guide",
@@ -1140,7 +1181,9 @@ describe("PipelineManager", () => {
             }
             return Promise.resolve([]);
           }),
-          ensureVersion: vi.fn().mockResolvedValue(1),
+          listLibraries: vi
+            .fn()
+            .mockResolvedValue([existingLibrary("interrupted-lib", "1.0.0")]),
           getVersionById: vi.fn().mockResolvedValue({
             id: 1,
             library_id: 1,
@@ -1202,7 +1245,9 @@ describe("PipelineManager", () => {
             }
             return Promise.resolve([]);
           }),
-          ensureVersion: vi.fn().mockResolvedValue(1),
+          listLibraries: vi
+            .fn()
+            .mockResolvedValue([existingLibrary("no-options-lib", "1.0.0")]),
           getVersionById: vi.fn().mockResolvedValue({
             id: 1,
             library_id: 1,

@@ -9,7 +9,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { EventBusService } from "../src/events";
 import { PipelineManager } from "../src/pipeline/PipelineManager";
 import { pipelineRouter } from "../src/pipeline/trpc/router";
@@ -301,5 +301,76 @@ describe("Version resolution end-to-end", () => {
       const { bestMatch } = await docService.findBestVersion(library);
       expect(bestMatch).toBe("2.0.0-beta");
     });
+  });
+});
+
+describe("Refresh target validation preserves persistent inventory", () => {
+  let directory: string;
+  let service: DocumentManagementService;
+  let pipeline: PipelineManager;
+  let config: AppConfig;
+
+  beforeEach(async () => {
+    directory = mkdtempSync(join(tmpdir(), "refresh-target-validation-"));
+    config = loadConfig();
+    config.app.storePath = directory;
+    config.app.embeddingModel = "";
+    const events = new EventBusService();
+    service = new DocumentManagementService(events, config);
+    await service.initialize();
+    await service.ensureVersion({ library: "existing", version: "1.0.0" });
+    pipeline = new PipelineManager(service, events, {
+      recoverJobs: false,
+      appConfig: config,
+    });
+  });
+
+  afterEach(async () => {
+    await service.shutdown();
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  for (const method of ["enqueueRefreshJob", "enqueueJobWithStoredOptions"] as const) {
+    it.each([
+      { library: "missing", version: "2.0.0" },
+      { library: "existing", version: "2.0.0" },
+      { library: "existing", version: undefined },
+      { library: "existing", version: "" },
+    ])(
+      `${method} rejects absent $library@$version without creating rows or jobs`,
+      async ({ library, version }) => {
+        const before = await service.listLibraries();
+        await expect(pipeline[method](library, version)).rejects.toThrow();
+        expect(await pipeline.getJobs()).toEqual([]);
+        expect(await service.listLibraries()).toEqual(before);
+        await service.shutdown();
+        service = new DocumentManagementService(new EventBusService(), config);
+        await service.initialize();
+        expect(await service.listLibraries()).toEqual(before);
+      },
+    );
+  }
+
+  it("recovers an existing unversioned incomplete version using stored options", async () => {
+    const versionId = await service.ensureVersion({
+      library: "recoverable",
+      version: "",
+    });
+    await service.storeScraperOptions(versionId, {
+      url: "https://example.com/docs",
+      library: "recoverable",
+      version: "",
+      preserveHashes: true,
+    });
+    const jobId = await pipeline.enqueueRefreshJob(" Recoverable ", "  ");
+    const job = await pipeline.getJob(jobId);
+    expect(job?.library).toBe(" Recoverable ");
+    expect(job?.version).toBeNull();
+    expect(job?.scraperOptions?.url).toBe("https://example.com/docs");
+    expect(job?.scraperOptions?.preserveHashes).toBe(true);
+    expect(
+      (await service.listLibraries()).find((library) => library.library === "recoverable")
+        ?.versions,
+    ).toHaveLength(1);
   });
 });
