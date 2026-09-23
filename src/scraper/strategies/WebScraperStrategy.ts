@@ -665,7 +665,7 @@ export class WebScraperStrategy extends BaseScraperStrategy {
         );
         const maxDepth = options.maxDepth ?? this.config.scraper.maxDepth;
         const navigationQueueItems =
-          item.depth + 1 > maxDepth
+          maxDepth >= 0 && item.depth + 1 > maxDepth
             ? []
             : filteredNavigationLinks.map(
                 (link) => ({ url: link, depth: item.depth + 1 }) satisfies QueueItem,

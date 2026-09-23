@@ -190,8 +190,8 @@ Settings controlling the web scraping behavior.
 
 | Option | Default | Description |
 |:-------|:--------|:------------|
-| `maxPages` | `1000` | Maximum number of pages to crawl per job. |
-| `maxDepth` | `3` | Maximum link depth to traverse. |
+| `maxPages` | `1000` | Maximum number of pages to crawl per job. `0` removes the page limit. |
+| `maxDepth` | `3` | Maximum link depth to traverse. `-1` removes the depth limit; `0` fetches only the root. |
 | `maxConcurrency` | `3` | Number of concurrent page fetches. |
 | `preserveHashes` | `false` | Preserve hash fragments as page identity for hash-routed SPA docs sites. |
 | `pageTimeoutMs` | `5000` | Timeout for a single page load (ms). |

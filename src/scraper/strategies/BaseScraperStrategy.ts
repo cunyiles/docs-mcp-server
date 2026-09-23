@@ -132,7 +132,7 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
    * @returns The processed-item budget.
    */
   private processingBudget(options: ScraperOptions): number {
-    const maxPages = options.maxPages ?? this.config.scraper.maxPages;
+    const maxPages = (options.maxPages ?? this.config.scraper.maxPages) || Infinity;
     // Items that produced nothing push the stopping point further out. Derived
     // rather than stored: every processed item is either indexed or it is not.
     return maxPages + (this.pageCount - this.pagesIndexed);
@@ -637,7 +637,7 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
           // be offered again at a shallower depth later. Consuming a dedup slot
           // here would discard it.
           const childDepth = item.depth + 1;
-          const linkQueueItems = (childDepth > maxDepth ? [] : nextItems)
+          const linkQueueItems = (maxDepth >= 0 && childDepth > maxDepth ? [] : nextItems)
             .map((value) => {
               try {
                 const targetUrl = new URL(value, linkBaseUrl);
@@ -774,7 +774,7 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
 
     // Resolve optional values to defaults using temporary config lookup
     // (We'll replace this with proper config merging later)
-    const maxPages = options.maxPages ?? this.config.scraper.maxPages;
+    const maxPages = (options.maxPages ?? this.config.scraper.maxPages) || Infinity;
     const maxConcurrency = options.maxConcurrency ?? this.config.scraper.maxConcurrency;
 
     // Initialize counters from the populated queue. The denominator is clamped

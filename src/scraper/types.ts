@@ -70,7 +70,9 @@ export interface ScraperOptions {
   url: string;
   library: string;
   version: string;
+  /** Maximum indexed pages; 0 disables the page limit. */
   maxPages?: number;
+  /** Maximum link depth; -1 disables the depth limit, 0 fetches only the root. */
   maxDepth?: number;
   /**
    * Defines the allowed crawling boundary relative to the starting URL
