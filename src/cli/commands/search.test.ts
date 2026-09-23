@@ -71,6 +71,16 @@ describe("search command", () => {
     expect(stdoutWriteMock).toHaveBeenCalledWith("[]\n");
   });
 
+  it("preserves an explicit empty version for exact unversioned searches", async () => {
+    const parser = yargs().scriptName("test");
+    createSearchCommand(parser);
+    await parser.parse(["search", "example", "Nebula", "--version", "", "--exact-match"]);
+    const execute = vi.mocked(SearchTool).mock.results.at(-1)?.value.execute;
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({ version: "", exactMatch: true }),
+    );
+  });
+
   it("renders YAML when requested globally", async () => {
     const parser = yargs().scriptName("test");
     createSearchCommand(parser);

@@ -13,6 +13,29 @@ const createMockSemanticSplitter = (chunks: Chunk[]) => {
 };
 
 describe("GreedySplitter", () => {
+  it("enforces its hard bound on an oversized base chunk without losing content or metadata", async () => {
+    const source = "x".repeat(301);
+    const splitter = new GreedySplitter(
+      {
+        async splitText() {
+          return [
+            { content: source, types: ["text"], section: { level: 2, path: ["Guide"] } },
+          ];
+        },
+      },
+      20,
+      80,
+      100,
+    );
+    const result = await splitter.splitText(source);
+    expect(result.map((chunk) => chunk.content).join("")).toBe(source);
+    for (const chunk of result) {
+      expect(chunk.content.length).toBeLessThanOrEqual(100);
+      expect(chunk.section).toEqual({ level: 2, path: ["Guide"] });
+      expect(chunk.types).toEqual(["text"]);
+    }
+  });
+
   it("should handle empty input", async () => {
     const mockSemanticSplitter = createMockSemanticSplitter([]);
     const splitter = new GreedySplitter(mockSemanticSplitter, 15, 200, 5000);

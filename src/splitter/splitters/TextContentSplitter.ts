@@ -1,23 +1,22 @@
-import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
-import { logger } from "../../utils/logger";
 import { MinimumChunkSizeError } from "../errors";
-import { hasOpenFenceAtEnd } from "./fenceState";
+import { findFenceRegions, hasOpenFenceAtEnd } from "./fenceState";
 import type { ContentSplitter, ContentSplitterOptions } from "./types";
 
 /**
  * Splits text content using a hierarchical approach:
  * 1. Try splitting by paragraphs (double newlines)
  * 2. If chunks still too large, split by single newlines
- * 3. Finally, use word boundaries via LangChain's splitter
+ * 3. Finally, slice at whitespace boundaries, splitting long tokens as needed
  *
- * Across all strategies the splitter preserves fenced code block balance: if
- * splitting would leave a chunk ending inside an open ``` or ~~~ fence, that
- * chunk is merged with the following chunk until the fence closes. When this
- * merging forces a chunk past `chunkSize`, the splitter accepts the oversize
- * chunk and emits a warning rather than break the fence.
+ * Fences that fit remain intact. Larger fences are closed and reopened around
+ * bounded source slices, preserving indentation, info strings and fence length.
  */
 export class TextContentSplitter implements ContentSplitter {
-  constructor(private options: ContentSplitterOptions) {}
+  constructor(private options: ContentSplitterOptions) {
+    if (!Number.isInteger(options.chunkSize) || options.chunkSize < 1) {
+      throw new RangeError("chunkSize must be a positive integer");
+    }
+  }
 
   /**
    * Splits text content into chunks while trying to preserve semantic boundaries.
@@ -27,15 +26,6 @@ export class TextContentSplitter implements ContentSplitter {
   async split(content: string): Promise<string[]> {
     if (content.length <= this.options.chunkSize) {
       return [content];
-    }
-
-    // Check for unsplittable content (e.g., a single word longer than chunkSize)
-    const words = content.split(/\s+/);
-    const longestWord = words.reduce((max: string, word: string) =>
-      word.length > max.length ? word : max,
-    );
-    if (longestWord.length > this.options.chunkSize) {
-      throw new MinimumChunkSizeError(longestWord.length, this.options.chunkSize);
     }
 
     // First try splitting by paragraphs (double newlines)
@@ -54,14 +44,88 @@ export class TextContentSplitter implements ContentSplitter {
       return this.mergeChunks(lineChunks, ""); // No separator needed - newlines are preserved in chunks
     }
 
-    // Finally, fall back to word-based splitting using LangChain. Re-merge for
-    // fence balance after word splitting, then collapse small chunks. Any chunk
-    // still over `chunkSize` after this step is an oversize-for-fence-balance
-    // case — emit it and warn rather than break the fence.
-    const wordChunks = this.mergeForFenceBalance(await this.splitByWords(content), " ");
-    const merged = this.mergeChunks(wordChunks, " ");
-    this.warnOversize(merged);
-    return merged;
+    return this.splitBounded(content);
+  }
+
+  private splitBounded(content: string): string[] {
+    const result: string[] = [];
+    let offset = 0;
+    for (const region of findFenceRegions(content)) {
+      result.push(
+        ...this.splitSource(
+          content.slice(offset, region.startOffset),
+          this.options.chunkSize,
+        ),
+      );
+      const fenced = content.slice(region.startOffset, region.endOffset);
+      if (fenced.length <= this.options.chunkSize) {
+        result.push(fenced);
+      } else {
+        const firstNewline = fenced.indexOf("\n");
+        const opener = fenced.slice(0, firstNewline + 1);
+        const match = opener.match(/^([ \t]*(?:>[ \t]*)*)(`{3,}|~{3,})/);
+        if (!match || firstNewline === -1) {
+          throw new MinimumChunkSizeError(fenced.length, this.options.chunkSize);
+        }
+        const closer = `${match[1]}${match[2]}`;
+        const closed = !hasOpenFenceAtEnd(fenced);
+        const lastLineStart =
+          fenced.lastIndexOf(
+            "\n",
+            fenced.endsWith("\n") ? fenced.length - 2 : fenced.length - 1,
+          ) + 1;
+        const body = fenced.slice(opener.length, closed ? lastLineStart : fenced.length);
+        const continuationPrefix = match[1].includes(">") ? match[1] : "";
+        const capacity =
+          this.options.chunkSize -
+          opener.length -
+          closer.length -
+          continuationPrefix.length -
+          1;
+        if (capacity < 1)
+          throw new MinimumChunkSizeError(
+            opener.length + closer.length + 2,
+            this.options.chunkSize,
+          );
+        let continuesLine = false;
+        for (const part of this.splitSource(body, capacity)) {
+          const prefix = continuesLine ? continuationPrefix : "";
+          result.push(
+            `${opener}${prefix}${part}${part.endsWith("\n") ? "" : "\n"}${closer}`,
+          );
+          continuesLine = !part.endsWith("\n");
+        }
+        if (closed && fenced.endsWith("\n")) {
+          const last = result.length - 1;
+          if (result[last].length < this.options.chunkSize) result[last] += "\n";
+          else result.push("\n");
+        }
+      }
+      offset = region.endOffset;
+    }
+    result.push(...this.splitSource(content.slice(offset), this.options.chunkSize));
+    return result;
+  }
+
+  /** Slices source without trimming whitespace or dropping long tokens. */
+  private splitSource(text: string, limit: number): string[] {
+    const chunks: string[] = [];
+    let offset = 0;
+    while (offset < text.length) {
+      let end = Math.min(offset + limit, text.length);
+      if (end < text.length) {
+        const window = text.slice(offset, end);
+        const newline = window.lastIndexOf("\n");
+        const whitespace = [...window.matchAll(/\s/g)].at(-1)?.index;
+        if (newline >= 0) end = offset + newline + 1;
+        else if (whitespace !== undefined) end = offset + whitespace + 1;
+        // Keep UTF-16 surrogate pairs together at a hard boundary.
+        else if (end > offset + 1 && /[\uD800-\uDBFF]/.test(text[end - 1])) end--;
+      }
+      chunks.push(text.slice(offset, end));
+      offset = end;
+    }
+    return chunks;
   }
 
   /**
@@ -82,23 +146,11 @@ export class TextContentSplitter implements ContentSplitter {
     }
 
     if (buffer) {
-      // No closing fence in the rest of the input — emit the dangling buffer as
-      // a single chunk. The fence balance check downstream will catch this and
-      // it will surface in logs as an oversize-chunk warning if applicable.
+      // Oversized buffers are handled by the bounded fallback below.
       result.push(buffer);
     }
 
     return result;
-  }
-
-  private warnOversize(chunks: string[]): void {
-    for (const chunk of chunks) {
-      if (chunk.length > this.options.chunkSize) {
-        logger.warn(
-          `⚠ TextContentSplitter emitted oversize chunk to preserve fence balance: ${chunk.length} > ${this.options.chunkSize}`,
-        );
-      }
-    }
   }
 
   /**
@@ -124,7 +176,7 @@ export class TextContentSplitter implements ContentSplitter {
       // Include the paragraph separator in the current chunk
       const endPos = match.index + match[0].length;
       const chunk = text.slice(startPos, endPos);
-      if (chunk.length > 2) {
+      if (chunk.length > 0) {
         chunks.push(chunk);
       }
       startPos = endPos;
@@ -134,7 +186,7 @@ export class TextContentSplitter implements ContentSplitter {
     // Add the remaining text
     if (startPos < text.length) {
       const remainingChunk = text.slice(startPos);
-      if (remainingChunk.length > 2) {
+      if (remainingChunk.length > 0) {
         chunks.push(remainingChunk);
       }
     }
@@ -165,19 +217,6 @@ export class TextContentSplitter implements ContentSplitter {
       chunks.push(text.slice(startPos));
     }
 
-    return chunks;
-  }
-
-  /**
-   * Uses LangChain's recursive splitter for word-based splitting as a last resort
-   */
-  private async splitByWords(text: string): Promise<string[]> {
-    const splitter = new RecursiveCharacterTextSplitter({
-      chunkSize: this.options.chunkSize,
-      chunkOverlap: 0,
-    });
-
-    const chunks = await splitter.splitText(text);
     return chunks;
   }
 

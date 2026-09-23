@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScrapeResult } from "../scraper/types";
 import type { Chunk } from "../splitter/types";
 import { loadConfig, markVectorDimensionSource } from "../utils/config";
+import { DocumentRetrieverService } from "./DocumentRetrieverService";
 import { DocumentStore } from "./DocumentStore";
 import { EmbeddingConfig } from "./embeddings/EmbeddingConfig";
 import { DimensionError, EmbeddingModelChangedError } from "./errors";
@@ -121,6 +122,7 @@ describe("DocumentStore - With Embeddings", () => {
   let store: DocumentStore;
 
   beforeEach(async () => {
+    vi.stubEnv("OPENAI_API_KEY", "test-embedding-key");
     mockEmbeddingDimension.value = 1536;
     // Create explicit embedding configuration for tests
     const embeddingConfig = EmbeddingConfig.parseEmbeddingConfig(
@@ -136,6 +138,7 @@ describe("DocumentStore - With Embeddings", () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     if (store) {
       await store.shutdown();
     }
@@ -248,6 +251,22 @@ describe("DocumentStore - With Embeddings", () => {
 
       // Verify documents no longer exist
       expect(await store.checkDocumentExists("removelib", "1.0.0")).toBe(false);
+    });
+
+    it("cleans up a library with no version rows only for an unversioned removal", async () => {
+      await store.resolveVersionId("empty-library", "1.0.0");
+      await store.removeVersion("empty-library", "1.0.0", false);
+      const missing = await store.removeVersion("empty-library", "missing", true);
+      expect(missing.libraryDeleted).toBe(false);
+      expect(await store.getLibrary("empty-library")).not.toBeNull();
+
+      const cleanup = await store.removeVersion("empty-library", "", true);
+      expect(cleanup).toEqual({
+        documentsDeleted: 0,
+        versionDeleted: false,
+        libraryDeleted: true,
+      });
+      expect(await store.getLibrary("empty-library")).toBeNull();
     });
 
     it("aggregates per-day indexing activity from page and chunk timestamps", async () => {
@@ -874,78 +893,59 @@ describe("DocumentStore - With Embeddings", () => {
       expect(await store.checkDocumentExists("retrytest", "1.0.0")).toBe(true);
     });
 
-    it("should truncate single oversized text when size error occurs", async () => {
-      // Skip if embeddings are disabled
-      // @ts-expect-error Accessing private property for testing
-      if (!store.embeddings) {
-        return;
-      }
-
-      // Mock embedDocuments to fail first time with size error for single large text
-      mockEmbedDocuments.mockImplementation(async (texts: string[]) => {
-        callCount++;
-
-        // First call with full text: simulate size error
-        if (callCount === 1) {
-          throw new Error("This model's maximum context length is 8191 tokens");
-        }
-
-        // Second call (after truncation): succeed
-        return texts.map(() => new Array(1536).fill(0.1));
-      });
-
-      // Create a document with very large content
-      const largeContent = "x".repeat(50000); // 50KB
+    it("rejects an oversized single input without embedding a truncated prefix", async () => {
+      const url = "https://example.com/large";
       await store.addDocuments(
-        "truncatetest",
-        "1.0.0",
-        1,
-        createScrapeResult("Large Doc", "https://example.com/large", largeContent, [
-          "section",
-        ]),
+        "size-test",
+        "1.0",
+        0,
+        createScrapeResult("Guide", url, "previous complete content"),
       );
-
-      // Should have been called twice (initial failure + successful retry with truncated text)
-      expect(callCount).toBe(2);
-      expect(await store.checkDocumentExists("truncatetest", "1.0.0")).toBe(true);
-    });
-
-    it("should truncate an oversized single text after splitting a batch", async () => {
-      // Skip if embeddings are disabled
-      // @ts-expect-error Accessing private property for testing
-      if (!store.embeddings) {
-        return;
-      }
-
+      mockEmbedDocuments.mockClear();
       mockEmbedDocuments.mockImplementation(async (texts: string[]) => {
-        callCount++;
-
-        if (texts.length > 1 || texts[0].includes("oversized")) {
+        if (texts.some((text) => text.includes("TAIL"))) {
           throw new Error("maximum context length exceeded");
         }
-
         return texts.map(() => new Array(1536).fill(0.1));
       });
+      const content = `HEAD ${"x".repeat(1000)} TAIL`;
+      await expect(
+        store.addDocuments(
+          "size-test",
+          "1.0",
+          0,
+          createScrapeResult("Guide", url, content),
+        ),
+      ).rejects.toThrow("maximum context length");
+      expect(mockEmbedDocuments).toHaveBeenCalledTimes(1);
+      expect(mockEmbedDocuments.mock.calls[0][0][0]).toContain(content);
+      expect(
+        (await store.findChunksByUrl("size-test", "1.0", url)).map((c) => c.content),
+      ).toEqual(["previous complete content"]);
+    });
 
+    it("rejects the whole page when batch splitting reaches an oversized input", async () => {
       const result = createScrapeResult(
-        "Split Then Truncate",
-        "https://example.com/split-then-truncate",
-        "regular chunk",
-        ["test"],
+        "Guide",
+        "https://example.com/batch-limit",
+        "regular",
       );
-      result.chunks = [
-        { types: ["text"], content: "regular chunk", section: { level: 0, path: ["a"] } },
-        {
-          types: ["text"],
-          content: `oversized ${"x".repeat(1000)}`,
-          section: { level: 0, path: ["b"] },
-        },
-      ];
-
-      await store.addDocuments("splittruncatetest", "1.0.0", 1, result);
-
-      expect(callCount).toBeGreaterThan(2);
-      expect(await store.checkDocumentExists("splittruncatetest", "1.0.0")).toBe(true);
+      result.chunks.push({
+        types: ["text"],
+        content: `HEAD ${"x".repeat(1000)} TAIL`,
+        section: { level: 0, path: [] },
+      });
+      mockEmbedDocuments.mockImplementation(async (texts: string[]) => {
+        if (texts.length > 1 || texts.some((text) => text.includes("TAIL"))) {
+          throw new Error("maximum context length exceeded");
+        }
+        return texts.map(() => new Array(1536).fill(0.1));
+      });
+      await expect(store.addDocuments("size-test", "1.0", 0, result)).rejects.toThrow(
+        "maximum context length",
+      );
+      expect(mockEmbedDocuments).toHaveBeenCalledTimes(3);
+      expect(await store.checkDocumentExists("size-test", "1.0")).toBe(false);
     });
 
     it("should detect various size error messages", async () => {
@@ -978,17 +978,17 @@ describe("DocumentStore - With Embeddings", () => {
         });
 
         const testLib = `errortest-${sizeErrorMessages.indexOf(errorMsg)}`;
-        await store.addDocuments(
-          testLib,
-          "1.0.0",
-          1,
-          createScrapeResult(
-            "Error Test",
-            `https://example.com/${testLib}`,
-            "Test content",
-            ["test"],
-          ),
+        const result = createScrapeResult(
+          "Error Test",
+          `https://example.com/${testLib}`,
+          "first chunk",
         );
+        result.chunks.push({
+          types: ["text"],
+          content: "second chunk",
+          section: { level: 0, path: [] },
+        });
+        await store.addDocuments(testLib, "1.0.0", 1, result);
 
         // Should have retried and succeeded
         expect(callCount).toBeGreaterThan(1);
@@ -1110,17 +1110,15 @@ describe("DocumentStore - With Embeddings", () => {
       expect(await store.checkDocumentExists("multisplit", "1.0.0")).toBe(true);
     });
 
-    it("should fail after retry if truncated text still too large", async () => {
+    it("rejects a single input size error without retrying partial content", async () => {
       // Skip if embeddings are disabled
       // @ts-expect-error Accessing private property for testing
       if (!store.embeddings) {
         return;
       }
 
-      // Mock embedDocuments to always fail with size error (even after truncation)
-      mockEmbedDocuments.mockRejectedValue(
-        new Error("maximum context length exceeded - even after truncation"),
-      );
+      // A single rejected input must remain intact.
+      mockEmbedDocuments.mockRejectedValue(new Error("maximum context length exceeded"));
 
       await expect(
         store.addDocuments(
@@ -1136,8 +1134,7 @@ describe("DocumentStore - With Embeddings", () => {
         ),
       ).rejects.toThrow("maximum context length exceeded");
 
-      // Should have attempted multiple times (original + retry after truncation)
-      expect(mockEmbedDocuments).toHaveBeenCalled();
+      expect(mockEmbedDocuments).toHaveBeenCalledTimes(1);
     });
   });
 });
@@ -3023,6 +3020,7 @@ describe("DocumentStore - concurrent writes to one identity", () => {
   });
 
   beforeEach(async () => {
+    vi.stubEnv("OPENAI_API_KEY", "test-embedding-key");
     // Vector search on, so embedding introduces a real await between reading
     // the page row and writing it — which is the window the race lives in.
     mockEmbeddingDimension.value = 1536;
@@ -3034,6 +3032,7 @@ describe("DocumentStore - concurrent writes to one identity", () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     if (store) await store.shutdown();
   });
 
@@ -3101,4 +3100,153 @@ describe("DocumentStore - concurrent writes to one identity", () => {
     expect(chunks).toHaveLength(1);
     expect(chunks[0].content).toBe("from markdown");
   });
+});
+
+describe.each([true, false])("Search row contract (embeddings=%s)", (vectors) => {
+  let store: DocumentStore;
+  const config = structuredClone(appConfig);
+  beforeEach(async () => {
+    vi.stubEnv("OPENAI_API_KEY", vectors ? "test-embedding-key" : "");
+    config.app.embeddingModel = vectors ? "openai:text-embedding-3-small" : "";
+    config.search.weightVec = 1;
+    config.search.weightFts = 1;
+    store = new DocumentStore(":memory:", config);
+    await store.initialize();
+  });
+  afterEach(async () => {
+    await store.shutdown();
+    vi.unstubAllEnvs();
+  });
+
+  it("fills result slots with distinct content when URL aliases contain duplicates", async () => {
+    for (const suffix of ["guide", "guide?tab=one", "guide//"]) {
+      await store.addDocuments(
+        "lib",
+        "1",
+        0,
+        createScrapeResult(
+          "Guide",
+          `https://example.com/${suffix}`,
+          "needle shared content",
+        ),
+      );
+    }
+    await store.addDocuments(
+      "lib",
+      "1",
+      0,
+      createScrapeResult(
+        "Details",
+        "https://example.com/details",
+        "needle additional explanation with different details",
+      ),
+    );
+    const results = await new DocumentRetrieverService(store, config).search(
+      "lib",
+      "1",
+      "needle",
+      2,
+    );
+    expect(results).toHaveLength(2);
+    expect(new Set(results.map((result) => result.content)).size).toBe(2);
+    expect(results.some((result) => result.url === "https://example.com/details")).toBe(
+      true,
+    );
+  });
+
+  it("returns chunk ordering and source location for context assembly", async () => {
+    const page = createScrapeResult("Guide", "https://example.com/guide", "needle first");
+    page.contentUrl = "https://example.com/guide.md";
+    page.chunks.push({
+      types: ["text"],
+      content: "needle second",
+      section: { level: 0, path: [] },
+    });
+    await store.addDocuments("lib", "1", 0, page);
+    const hits = await store.findByContent("lib", "1", "needle", 5);
+    expect(hits.map((c) => c.sort_order).sort()).toEqual([0, 1]);
+    expect(hits.every((c) => c.content_url === page.contentUrl)).toBe(true);
+    const assembled = await new DocumentRetrieverService(store, config).search(
+      "lib",
+      "1",
+      "needle",
+      5,
+    );
+    expect(assembled).toHaveLength(1);
+    expect(assembled[0].content).toContain("needle first");
+    expect(assembled[0].content).toContain("needle second");
+    expect(assembled[0].contentUrl).toBe(page.contentUrl);
+  });
+
+  if (vectors) {
+    it("keeps expanded candidate searches within the native vector k limit", async () => {
+      await store.shutdown();
+      const expanded = structuredClone(config);
+      expanded.search.overfetchFactor = 3;
+      store = new DocumentStore(":memory:", expanded);
+      await store.initialize();
+      await store.addDocuments(
+        "lib",
+        "1",
+        0,
+        createScrapeResult("Guide", "https://example.com/guide", "needle content"),
+      );
+      const results = await new DocumentRetrieverService(store, expanded).search(
+        "lib",
+        "1",
+        "needle",
+        100,
+      );
+      expect(results).toHaveLength(1);
+    });
+
+    it("does not grant a vector rank to a keyword-only candidate", async () => {
+      await store.shutdown();
+      const narrowConfig = structuredClone(config);
+      narrowConfig.search.overfetchFactor = 1;
+      narrowConfig.search.vectorMultiplier = 1;
+      narrowConfig.search.weightFts = 2;
+      store = new DocumentStore(":memory:", narrowConfig);
+      await store.initialize();
+      // Only the provider is mocked; candidate selection and ranking use SQLite.
+      // @ts-expect-error Accessing the mocked embedding provider
+      const provider = store.embeddings;
+      if (!provider) throw new Error("Expected mocked embeddings to be enabled");
+      const vector = (index: number) =>
+        Array.from({ length: 1536 }, (_, i) => (i === index ? 1 : 0));
+      vi.mocked(provider.embedQuery).mockResolvedValue(vector(0));
+      vi.mocked(provider.embedDocuments).mockResolvedValueOnce([vector(0)]);
+      await store.addDocuments(
+        "lib",
+        "1",
+        0,
+        createScrapeResult("Vector", "https://example.com/vector", "semantic candidate"),
+      );
+      vi.mocked(provider.embedDocuments).mockResolvedValueOnce([vector(1)]);
+      await store.addDocuments(
+        "lib",
+        "1",
+        0,
+        createScrapeResult("Keyword", "https://example.com/keyword", "rarekeyword"),
+      );
+      const [hit] = await store.findByContent("lib", "1", "rarekeyword", 1);
+      expect(hit.url).toBe("https://example.com/keyword");
+      expect(hit.vec_rank).toBeUndefined();
+      expect(hit.fts_rank).toBe(1);
+      expect(hit.score).toBeCloseTo(2 / 61);
+    });
+
+    it("does not grant a keyword rank to a vector-only match", async () => {
+      await store.addDocuments(
+        "lib",
+        "1",
+        0,
+        createScrapeResult("Guide", "https://example.com/guide", "durable workflows"),
+      );
+      const [hit] = await store.findByContent("lib", "1", "unmatchedkeyword", 5);
+      expect(hit.vec_rank).toBe(1);
+      expect(hit.fts_rank).toBeUndefined();
+      expect(hit.score).toBeCloseTo(1 / 61);
+    });
+  }
 });

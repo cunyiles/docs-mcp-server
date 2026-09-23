@@ -22,6 +22,85 @@ describe("MarkdownPipeline", () => {
     vi.restoreAllMocks();
   });
 
+  it("removes embedded image payloads before chunking while keeping image descriptions and code examples", async () => {
+    const content = [
+      "# Images",
+      "![Diagram](data:image/png;base64,QUJDREVGRw==)",
+      "![Encoded](data:image/png%3Bbase64,SElKS0w=)",
+      "![Reference][diagram]",
+      "[diagram]: data:image/png;base64,TU5PUFFS",
+      '<details><summary>Figure</summary><img alt="Nested diagram" src="data:image/png;base64,U1RVVldY"></details>',
+      "![Remote](https://example.com/diagram.png)",
+      "`![Example](data:image/png;base64,ZXhhbXBsZQ==)`",
+      '```html\n<img src="data:image/png;base64,Y29kZQ==">\n```',
+    ].join("\n\n");
+    const result = await new MarkdownPipeline(appConfig).process(
+      {
+        content,
+        mimeType: "text/markdown",
+        source: "https://example.com/images",
+        status: FetchStatus.SUCCESS,
+      },
+      {} as ScraperOptions,
+    );
+    for (const text of [
+      result.textContent,
+      result.chunks?.map((chunk) => chunk.content).join("\n") ?? "",
+    ]) {
+      for (const payload of ["QUJDREVGRw==", "SElKS0w=", "TU5PUFFS", "U1RVVldY"])
+        expect(text).not.toContain(payload);
+      for (const preserved of [
+        "Diagram",
+        "Encoded",
+        "Reference",
+        "Nested diagram",
+        "https://example.com/diagram.png",
+        "ZXhhbXBsZQ==",
+        "Y29kZQ==",
+      ])
+        expect(text).toContain(preserved);
+    }
+  });
+
+  it("keeps fenced Markdown examples valid after semantic conversion", async () => {
+    const content = "# Examples\n\n````markdown\n```js\n    run();\n```\n````";
+    const result = await new MarkdownPipeline(appConfig).process(
+      {
+        content,
+        mimeType: "text/markdown",
+        source: "https://example.com/examples",
+        status: FetchStatus.SUCCESS,
+      },
+      {} as ScraperOptions,
+    );
+    expect(result.chunks?.map((chunk) => chunk.content).join("\n")).toContain(
+      "````markdown\n```js\n    run();\n```\n",
+    );
+  });
+
+  it("bounds nested details code chunks without losing indented source lines", async () => {
+    const lines = Array.from(
+      { length: 1800 },
+      (_, i) => `    const value_${i} = "preserve this indented source";`,
+    );
+    const result = await new MarkdownPipeline(appConfig).process(
+      {
+        content: `<details><summary>Outer</summary><details><summary>Inner</summary><pre><code>${lines.join("\n")}</code></pre></details></details>`,
+        mimeType: "text/markdown",
+        source: "https://example.com/details",
+        status: FetchStatus.SUCCESS,
+      },
+      {} as ScraperOptions,
+    );
+    const chunks = result.chunks ?? [];
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(Math.max(...chunks.map((chunk) => chunk.content.length))).toBeLessThanOrEqual(
+      appConfig.splitter.maxChunkSize,
+    );
+    const all = chunks.map((chunk) => chunk.content).join("\n");
+    for (const line of lines) expect(all).toContain(line);
+  });
+
   it("canProcess returns true for text/markdown", () => {
     const pipeline = new MarkdownPipeline(appConfig);
     expect(pipeline.canProcess("text/markdown")).toBe(true);

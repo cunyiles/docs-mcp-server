@@ -170,32 +170,54 @@ export class PipelineClient implements IPipeline {
 
   async waitForJobCompletion(jobId: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      // Listen for job status changes on the event bus
-      // RemoteEventProxy bridges remote worker events to this local bus
-      const unsubscribe = this.eventBus.on(
-        EventType.JOB_STATUS_CHANGE,
-        (job: PipelineJob) => {
-          // Filter for the specific job we're waiting for
-          if (job.id !== jobId) {
+      let settled = false;
+      let pollTimer: ReturnType<typeof setTimeout> | undefined;
+      let cancellationTimer: ReturnType<typeof setTimeout> | undefined;
+
+      const finish = (error?: unknown) => {
+        if (settled) return;
+        settled = true;
+        unsubscribe();
+        clearTimeout(pollTimer);
+        clearTimeout(cancellationTimer);
+        if (error) reject(error);
+        else resolve();
+      };
+
+      const observe = (job: PipelineJob) => {
+        if (settled || job.id !== jobId) return;
+        if (job.status === "completed" || job.status === "cancelled") {
+          finish();
+        } else if (job.status === "failed") {
+          finish(new Error(job.error?.message ?? `Job failed: ${jobId}`));
+        } else if (job.status === "cancelling" && !cancellationTimer) {
+          cancellationTimer = setTimeout(
+            () => finish(new Error(`Timed out waiting for job cancellation: ${jobId}`)),
+            60_000,
+          );
+        }
+      };
+
+      const unsubscribe = this.eventBus.on(EventType.JOB_STATUS_CHANGE, observe);
+
+      // Subscribe before the first status read so neither an already-terminal
+      // job nor a transition during that read can be missed. Polling also works
+      // for CLI clients that have no RemoteEventProxy feeding their event bus.
+      const poll = async () => {
+        try {
+          const job = await this.getJob(jobId);
+          if (settled) return;
+          if (!job) {
+            finish(new Error(`Job not found while waiting for completion: ${jobId}`));
             return;
           }
-
-          // Check if job reached a terminal state
-          if (
-            job.status === "completed" ||
-            job.status === "failed" ||
-            job.status === "cancelled"
-          ) {
-            unsubscribe();
-
-            if (job.status === "failed" && job.error) {
-              reject(new Error(job.error.message));
-            } else {
-              resolve();
-            }
-          }
-        },
-      );
+          observe(job);
+          if (!settled) pollTimer = setTimeout(poll, 1_000);
+        } catch (error) {
+          finish(error);
+        }
+      };
+      void poll();
     });
   }
 

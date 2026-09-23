@@ -219,7 +219,7 @@ describe("DocumentRetrieverService", () => {
     ]);
   });
 
-  it("should use the provided limit", async () => {
+  it("overfetches candidates before applying the result limit", async () => {
     const library = "lib";
     const version = "1.0.0";
     const query = "test";
@@ -241,7 +241,12 @@ describe("DocumentRetrieverService", () => {
 
     const results = await service.search(library, version, query, limit);
 
-    expect(store.findByContent).toHaveBeenCalledWith(library, version, query, limit);
+    expect(store.findByContent).toHaveBeenCalledWith(
+      library,
+      version,
+      query,
+      limit * config.search.overfetchFactor,
+    );
     expect(results).toEqual([
       {
         content: "Main chunk",

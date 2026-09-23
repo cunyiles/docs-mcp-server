@@ -105,7 +105,9 @@ indexing.
 
 ### remove
 
-Delete a library (or a specific version) from the index.
+Delete one exact version and its documents from the index. Omit `--version`
+or pass `--version ""` to remove the unversioned bucket. Named versions remain
+until explicitly removed; removing the last version also removes the library.
 
 ```bash
 npx @arabold/docs-mcp-server@latest remove <library> [options]
@@ -113,7 +115,7 @@ npx @arabold/docs-mcp-server@latest remove <library> [options]
 
 | Flag | Alias | Description |
 |------|-------|-------------|
-| `--version <ver>` | `-v` | Specific version to remove (omit to remove latest) |
+| `--version <ver>` | `-v` | Exact version label to remove (omitted or empty selects unversioned) |
 | `--server-url <url>` | | Remote pipeline worker URL |
 | `--quiet` | | Suppress non-error diagnostics |
 | `--verbose` | | Enable debug logging |
@@ -123,6 +125,9 @@ Example:
 ```bash
 npx @arabold/docs-mcp-server@latest remove react --version 18.3.1
 ```
+
+A missing target returns an error. An unversioned removal also cleans up a
+library record that has no version records.
 
 This is destructive and cannot be undone. Re-run `scrape` to re-index.
 Bulk deletes checkpoint the WAL without locking readers. Use `compact` when

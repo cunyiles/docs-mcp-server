@@ -32,12 +32,18 @@ export class DocumentRetrieverService {
     limit?: number,
   ): Promise<StoreSearchResult[]> {
     const normalizedVersion = normalizeVersionLabel(version);
+    const resultLimit = limit ?? 10;
+    // Context assembly can merge several hits into one result. Fetch a bounded
+    // surplus so duplicate representations do not consume every result slot.
+    const candidateLimit = Math.ceil(
+      resultLimit * Math.max(1, this.config.search.overfetchFactor),
+    );
 
     const initialResults = await this.documentStore.findByContent(
       library,
       normalizedVersion,
       query,
-      limit ?? 10,
+      candidateLimit,
     );
 
     if (initialResults.length === 0) {
@@ -70,7 +76,17 @@ export class DocumentRetrieverService {
     // the highly relevant one appears first in the final list.
     results.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
 
-    return results;
+    const seen = new Set<string>();
+    return results
+      .filter((result) => {
+        // Preserve URL identities in storage: query strings and repeated path
+        // separators can be meaningful. Only identical assembled text is
+        // redundant to the search caller; retain its highest-scoring source.
+        if (seen.has(result.content)) return false;
+        seen.add(result.content);
+        return true;
+      })
+      .slice(0, resultLimit);
   }
 
   /**

@@ -4,6 +4,7 @@ import type { AppConfig } from "../../utils/config";
 import { logger } from "../../utils/logger";
 import { MimeTypeUtils } from "../../utils/mimeTypeUtils";
 import type { ContentFetcher, RawContent } from "../fetcher/types";
+import { EmbeddedImageMiddleware } from "../middleware/EmbeddedImageMiddleware";
 import { HtmlCheerioParserMiddleware } from "../middleware/HtmlCheerioParserMiddleware";
 import { HtmlLinkExtractorMiddleware } from "../middleware/HtmlLinkExtractorMiddleware";
 import { HtmlMetadataExtractorMiddleware } from "../middleware/HtmlMetadataExtractorMiddleware";
@@ -52,6 +53,7 @@ export class HtmlPipeline extends BasePipeline {
       extractor,
       new HtmlNormalizationMiddleware(),
       new HtmlToMarkdownMiddleware(),
+      new EmbeddedImageMiddleware(),
     ];
 
     // Create the two-phase splitting: semantic + size optimization

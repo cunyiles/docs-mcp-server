@@ -3,8 +3,11 @@
  */
 
 import type { Argv } from "yargs";
-import { createDocumentManagement } from "../../store";
+import { PipelineFactory } from "../../pipeline";
+import type { IPipeline } from "../../pipeline/trpc/interfaces";
+import { createDocumentManagement, type DocumentManagementService } from "../../store";
 import { TelemetryEvent, telemetry } from "../../telemetry";
+import { RemoveTool } from "../../tools/RemoveTool";
 import { loadConfig } from "../../utils/config";
 import { logger } from "../../utils/logger";
 import { renderTextOutput } from "../output";
@@ -24,7 +27,8 @@ export function createRemoveCommand(cli: Argv) {
         })
         .option("version", {
           type: "string",
-          description: "Version to remove (optional, removes latest if omitted)",
+          description:
+            "Exact version to remove (omitted or empty removes unversioned docs)",
           alias: "v",
         })
         .option("server-url", {
@@ -59,20 +63,35 @@ export function createRemoveCommand(cli: Argv) {
         eventBus,
         appConfig: appConfig,
       });
+      let pipeline: IPipeline | undefined;
       try {
-        // Call the document service directly - we could convert this to use RemoveTool if needed
-        await docService.removeAllDocuments(library, version);
-
-        renderTextOutput(
-          `Successfully removed ${library}${version ? `@${version}` : ""}.`,
-        );
+        pipeline = serverUrl
+          ? await PipelineFactory.createPipeline(undefined, eventBus, {
+              serverUrl,
+              appConfig,
+            })
+          : await PipelineFactory.createPipeline(
+              docService as DocumentManagementService,
+              eventBus,
+              { recoverJobs: false, appConfig },
+            );
+        await pipeline.start();
+        const result = await new RemoveTool(docService, pipeline).execute({
+          library,
+          version,
+        });
+        renderTextOutput(result.message);
       } catch (error) {
         logger.error(
           `❌ Failed to remove ${library}${version ? `@${version}` : ""}: ${error instanceof Error ? error.message : String(error)}`,
         );
         throw error;
       } finally {
-        await docService.shutdown();
+        try {
+          await pipeline?.stop();
+        } finally {
+          await docService.shutdown();
+        }
       }
     },
   );

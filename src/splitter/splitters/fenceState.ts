@@ -64,7 +64,7 @@ function isClosingFence(line: string, delimiter: string, openerCount: number): b
   const closerRegex = new RegExp(
     `^${FENCE_PREFIX}\\${delimiter}{${openerCount},}[ \\t]*$`,
   );
-  return closerRegex.test(line);
+  return closerRegex.test(line.replace(/\r$/, ""));
 }
 
 /**
@@ -73,7 +73,7 @@ function isClosingFence(line: string, delimiter: string, openerCount: number): b
  * closer (inclusive of trailing newlines). Unclosed openers produce a region
  * extending to the end of input.
  */
-function findFenceRegions(text: string): FenceRegion[] {
+export function findFenceRegions(text: string): FenceRegion[] {
   const regions: FenceRegion[] = [];
   const lines = splitLinesWithOffsets(text);
 
