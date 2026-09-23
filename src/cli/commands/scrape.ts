@@ -40,12 +40,12 @@ export function createScrapeCommand(cli: Argv) {
         })
         .option("max-pages", {
           type: "number",
-          description: "Maximum pages to scrape",
+          description: "Maximum pages to scrape (0 for unlimited)",
           alias: ["p", "maxPages"],
         })
         .option("max-depth", {
           type: "number",
-          description: "Maximum navigation depth",
+          description: "Maximum navigation depth (-1 for unlimited, 0 for root only)",
           alias: ["d", "maxDepth"],
         })
         .option("max-concurrency", {

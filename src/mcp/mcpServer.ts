@@ -103,16 +103,22 @@ export function createMcpServerInstance(
         version: z.string().trim().optional().describe("Library version (optional)."),
         maxPages: z
           .number()
+          .int()
+          .min(0)
           .optional()
           .default(config.scraper.maxPages)
           .describe(
-            `Maximum number of pages to scrape (default: ${config.scraper.maxPages}).`,
+            `Maximum number of pages to scrape; 0 means unlimited (default: ${config.scraper.maxPages}).`,
           ),
         maxDepth: z
           .number()
+          .int()
+          .min(-1)
           .optional()
           .default(config.scraper.maxDepth)
-          .describe(`Maximum navigation depth (default: ${config.scraper.maxDepth}).`),
+          .describe(
+            `Maximum navigation depth; -1 means unlimited, 0 means root only (default: ${config.scraper.maxDepth}).`,
+          ),
         scope: z
           .enum(["subpages", "hostname", "domain"])
           .optional()

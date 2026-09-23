@@ -124,6 +124,25 @@ describe("Scrape progress counters E2E", () => {
 
   const lastEvent = () => progressEvents[progressEvents.length - 1];
 
+  it("crawls without page or depth caps and retains the settings for refresh", async () => {
+    for (let depth = 0; depth < 6; depth++) {
+      const path = depth === 0 ? "/" : `/page-${depth}`;
+      const body = depth === 5 ? leafPage("Deepest") : hubPage([`/page-${depth + 1}`]);
+      nock(TEST_BASE_URL).persist().get(path).reply(200, body, { "Content-Type": "text/html" });
+    }
+
+    const job = await runScrape({ maxPages: 0, maxDepth: -1 });
+    expect(job.status).toBe(PipelineJobStatus.COMPLETED);
+    expect(lastEvent()).toMatchObject({ pagesIndexed: 6, pagesScraped: 6, totalPages: 6 });
+
+    const refreshId = await pipelineManager.enqueueRefreshJob(TEST_LIBRARY, TEST_VERSION);
+    await pipelineManager.waitForJobCompletion(refreshId);
+    const refreshed = await pipelineManager.getJob(refreshId);
+    expect(refreshed?.status).toBe(PipelineJobStatus.COMPLETED);
+    expect(refreshed?.scraperOptions).toMatchObject({ maxPages: 0, maxDepth: -1 });
+    expect(lastEvent()).toMatchObject({ pagesIndexed: 6, pagesScraped: 6, totalPages: 6 });
+  }, 30000);
+
   it("converges pagesScraped on totalPages when the queue drains", async () => {
     nock(TEST_BASE_URL)
       .get("/")

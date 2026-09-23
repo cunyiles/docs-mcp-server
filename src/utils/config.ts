@@ -220,8 +220,8 @@ export const AppConfigSchema = z.object({
     .default(DEFAULT_CONFIG.auth),
   scraper: z
     .object({
-      maxPages: z.coerce.number().int().default(DEFAULT_CONFIG.scraper.maxPages),
-      maxDepth: z.coerce.number().int().default(DEFAULT_CONFIG.scraper.maxDepth),
+      maxPages: z.coerce.number().int().min(0).default(DEFAULT_CONFIG.scraper.maxPages),
+      maxDepth: z.coerce.number().int().min(-1).default(DEFAULT_CONFIG.scraper.maxDepth),
       maxConcurrency: z.coerce
         .number()
         .int()
