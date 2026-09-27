@@ -10,6 +10,8 @@ import axios from "axios";
 
 const mockedAxios = vi.mocked(axios, true);
 
+import { AutoDetectFetcher } from "./AutoDetectFetcher";
+import { BrowserFetcher } from "./BrowserFetcher";
 import { HttpFetcher } from "./HttpFetcher";
 import { FetchStatus } from "./types";
 
@@ -421,6 +423,36 @@ describe("HttpFetcher", () => {
   });
 
   describe("redirect handling", () => {
+    it("falls back to the browser when stateless redirects cannot complete", async () => {
+      const source = "https://example.com/docs";
+      mockedAxios.get.mockImplementation(async (url) => ({
+        status: 302,
+        headers: {
+          location: url === source ? "/session" : "/docs",
+          "set-cookie": ["visited=1; Path=/; HttpOnly"],
+        },
+        data: Readable.from("redirect"),
+      }));
+      const browserResult = {
+        content: Buffer.from("Documentation after the cookie redirect"),
+        mimeType: "text/html",
+        source,
+        status: FetchStatus.SUCCESS,
+      };
+      const browserFetch = vi
+        .spyOn(BrowserFetcher.prototype, "fetch")
+        .mockResolvedValue(browserResult);
+      const fetcher = new AutoDetectFetcher(DEFAULT_CONFIG.scraper);
+      try {
+        expect(await fetcher.fetch(source)).toEqual(browserResult);
+        expect(mockedAxios.get).toHaveBeenCalledTimes(6);
+        expect(browserFetch).toHaveBeenCalledExactlyOnceWith(source, undefined);
+      } finally {
+        browserFetch.mockRestore();
+        await fetcher.close();
+      }
+    });
+
     it("should follow redirects by default", async () => {
       const fetcher = createFetcher();
       const mockResponse = {
