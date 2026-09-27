@@ -1,10 +1,13 @@
-/** Exercises vector persistence, required readiness, and atomic refresh failures. */
+/**
+ * Exercises vector persistence, embedding readiness, and atomic page
+ * replacement with embedding as a separate background layer.
+ */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { config } from "dotenv";
-import { delay, http, HttpResponse } from "msw";
+import { http, HttpResponse } from "msw";
 import * as sqliteVec from "sqlite-vec";
 import {
   afterAll,
@@ -28,6 +31,7 @@ import {
   EmbeddingConfig,
   type EmbeddingModelConfig,
 } from "../src/store/embeddings/EmbeddingConfig";
+import { EmbeddingBatchError, EmbeddingModelChangedError } from "../src/store/errors";
 import { ScrapeTool } from "../src/tools/ScrapeTool";
 import {
   type AppConfig,
@@ -35,9 +39,15 @@ import {
   markVectorDimensionSource,
 } from "../src/utils/config";
 import { logger } from "../src/utils/logger";
+import { eventually } from "./harness";
 import { server } from "./mock-server";
 
 config();
+
+/** Gives every pending chunk its vector, as the backlog worker would. */
+async function drain(store: DocumentStore): Promise<void> {
+  while ((await store.embedPendingBatch()).length > 0) {}
+}
 
 describe("Vector persistence", () => {
   let tempDir: string;
@@ -129,21 +139,24 @@ describe("Vector persistence", () => {
     const dbPath = path.join(tempDir, "documents.db");
     const db = new Database(dbPath);
     sqliteVec.load(db);
-
-    const { chunkCount } = db
-      .prepare("SELECT COUNT(*) as chunkCount FROM documents WHERE embedding IS NOT NULL")
-      .get() as { chunkCount: number };
-    expect(chunkCount).toBeGreaterThan(0);
-
-    const { vecCount } = db
-      .prepare("SELECT COUNT(*) as vecCount FROM documents_vec")
-      .get() as { vecCount: number };
-    expect(vecCount).toBeGreaterThan(0);
-    expect(vecCount).toBe(chunkCount);
+    try {
+      const count = (sql: string) => (db.prepare(sql).get() as { n: number }).n;
+      await eventually(
+        async () => count("SELECT COUNT(*) AS n FROM documents WHERE embedding IS NULL") === 0,
+        30_000,
+      );
+      const chunkCount = count(
+        "SELECT COUNT(*) AS n FROM documents WHERE embedding IS NOT NULL",
+      );
+      expect(chunkCount).toBeGreaterThan(0);
+      expect(count("SELECT COUNT(*) AS n FROM documents_vec")).toBe(chunkCount);
+    } finally {
+      db.close();
+    }
   }, 60000);
 });
 
-/** Required readiness and replacement run through the real provider and SQLite. */
+/** Readiness and replacement run through the real provider client and SQLite. */
 describe("Embedding readiness and atomic replacement", () => {
   let directory: string;
   let settings: AppConfig;
@@ -165,6 +178,7 @@ describe("Embedding readiness and atomic replacement", () => {
     settings.embeddings.required = true;
     settings.embeddings.initTimeoutMs = 100;
     settings.embeddings.requestTimeoutMs = 200;
+    settings.embeddings.retryBaseDelayMs = 20;
     responseVector = Array(1536).fill(0.01);
     rejectEmbedding = false;
     requests = 0;
@@ -177,9 +191,15 @@ describe("Embedding readiness and atomic replacement", () => {
       ),
       http.post("https://embeddings.example.com/v1/embeddings", async ({ request }) => {
         requests++;
-        if (rejectEmbedding || requests === failRequest) {
+        if (rejectEmbedding) {
           return HttpResponse.json(
             { error: { message: "provider unavailable" } },
+            { status: 503 },
+          );
+        }
+        if (requests === failRequest) {
+          return HttpResponse.json(
+            { error: { message: "provider rejected input" } },
             { status: 400 },
           );
         }
@@ -239,7 +259,10 @@ describe("Embedding readiness and atomic replacement", () => {
     try {
       return {
         pages: db.prepare("SELECT * FROM pages ORDER BY id").all(),
-        chunks: db.prepare("SELECT * FROM documents ORDER BY id").all(),
+        chunks: db.prepare("SELECT * FROM documents ORDER BY id").all() as Array<{
+          content: string;
+          embedding: unknown;
+        }>,
         vectors: db
           .prepare("SELECT rowid, embedding FROM documents_vec ORDER BY rowid")
           .all(),
@@ -248,6 +271,10 @@ describe("Embedding readiness and atomic replacement", () => {
       db.close();
     }
   }
+
+  /** Waits until the background worker has embedded every chunk. */
+  const backlogDrained = () =>
+    eventually(async () => snapshot().chunks.every((chunk) => chunk.embedding !== null));
 
   it.each(["model", "credentials"])(
     "rejects required startup without %s",
@@ -258,47 +285,62 @@ describe("Embedding readiness and atomic replacement", () => {
     },
   );
 
-  it("probes a known model once before declaring vector readiness", async () => {
+  it("starts without calling the provider", async () => {
     await openStore().initialize();
-    expect(requests).toBe(1);
+    expect(requests).toBe(0);
     expect(logger.info).toHaveBeenCalledWith(
       "✅ Vector search enabled: openai:text-embedding-3-small (1536d)",
     );
   });
 
-  it("rejects an offline cached provider and preserves indexed vectors", async () => {
+  it("starts while the provider is offline and keeps indexed vectors", async () => {
     const initial = openStore();
     await initial.initialize();
     await initial.addDocuments("library", "1.0", 0, page());
+    await drain(initial);
     const previous = snapshot();
     rejectEmbedding = true;
     const next = openStore();
-    await expect(next.initialize()).rejects.toThrow();
-    expect(next.getActiveEmbeddingConfig()).toBeNull();
+    await expect(next.initialize()).resolves.toBeUndefined();
+    expect(next.getActiveEmbeddingConfig()).not.toBeNull();
     expect(snapshot()).toEqual(previous);
   });
 
   it.each([
     { name: "empty", vector: [] },
     { name: "nonfinite", vector: Array(1536).fill(null) },
-    { name: "wrong dimension", vector: [0.1, 0.2] },
-  ])("rejects $name probe vectors", async ({ vector }) => {
+    { name: "oversized", vector: Array(2048).fill(0.1) },
+  ])("keeps a chunk pending when the provider returns $name vectors", async ({ vector }) => {
     responseVector = vector;
-    await expect(openStore().initialize()).rejects.toThrow();
+    const store = openStore();
+    await store.initialize();
+    await store.addDocuments("library", "1.0", 0, page());
+    const error = await store.embedPendingBatch().catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(EmbeddingBatchError);
+    expect((error as EmbeddingBatchError).transient).toBe(false);
+    const state = snapshot();
+    expect(state.chunks).toHaveLength(1);
+    expect(state.chunks[0].embedding).toBeNull();
+    expect(state.vectors).toEqual([]);
   });
 
-  it("bounds a required known-model startup probe by the initialization timeout", async () => {
+  it("keeps a chunk pending when the provider returns no vector for it", async () => {
+    const store = openStore();
+    await store.initialize();
+    await store.addDocuments("library", "1.0", 0, page());
     server.use(
-      http.get(
-        "https://docs.example.com/llms.txt",
-        () => new HttpResponse(null, { status: 404 }),
+      http.post("https://embeddings.example.com/v1/embeddings", () =>
+        HttpResponse.json({
+          object: "list",
+          data: [],
+          model: "text-embedding-3-small",
+          usage: { prompt_tokens: 0, total_tokens: 0 },
+        }),
       ),
-      http.post("https://embeddings.example.com/v1/embeddings", async () => {
-        await delay(200);
-        return HttpResponse.json({ data: [{ embedding: Array(1536).fill(0.01) }] });
-      }),
     );
-    await expect(openStore().initialize()).rejects.toThrow(/timed out/);
+    await expect(store.embedPendingBatch()).rejects.toBeInstanceOf(EmbeddingBatchError);
+    expect(snapshot().vectors).toEqual([]);
+    expect(await store.findByContent("library", "1.0", "searchable", 5)).toHaveLength(1);
   });
 
   it("keeps optional FTS available without credentials", async () => {
@@ -311,20 +353,22 @@ describe("Embedding readiness and atomic replacement", () => {
     expect(requests).toBe(0);
   });
 
-  it("rejects query transport failure rather than returning FTS success", async () => {
+  it("falls back to keyword search when the query embedding fails", async () => {
     const store = openStore();
     await store.initialize();
     await store.addDocuments("library", "1.0", 0, page());
+    await drain(store);
     rejectEmbedding = true;
-    await expect(
-      store.findByContent("library", "1.0", "searchable", 5),
-    ).rejects.toThrow();
+    const hits = await store.findByContent("library", "1.0", "searchable", 5);
+    expect(hits).toHaveLength(1);
+    expect(hits[0].content).toBe("previous searchable content");
   });
 
-  it("rolls back chunks, vectors and validators when an insert fails mid-replacement", async () => {
+  it("rolls back chunks and validators when an insert fails mid-replacement", async () => {
     const store = openStore();
     await store.initialize();
     await store.addDocuments("library", "1.0", 0, page());
+    await drain(store);
     const previous = snapshot();
     const db = new Database(path.join(directory, "documents.db"));
     db.exec(
@@ -346,12 +390,11 @@ describe("Embedding readiness and atomic replacement", () => {
     }
   });
 
-  it("keeps the previous page after a later embedding batch fails", async () => {
+  it("replaces the page even when embedding its new chunks fails", async () => {
     const store = openStore();
     await store.initialize();
     await store.addDocuments("library", "1.0", 0, page());
-    const previous = snapshot();
-    // A new store uses the configured batch boundary through its public constructor.
+    await drain(store);
     settings.embeddings.batchSize = 1;
     const next = openStore();
     await next.initialize();
@@ -361,59 +404,33 @@ describe("Embedding readiness and atomic replacement", () => {
       types: ["text"],
       section: { level: 0, path: [] },
     });
+    await next.addDocuments("library", "1.0", 0, replacement);
     failRequest = requests + 2;
-    await expect(next.addDocuments("library", "1.0", 0, replacement)).rejects.toThrow();
-    expect(snapshot()).toEqual(previous);
+    await expect(drain(next)).rejects.toBeInstanceOf(EmbeddingBatchError);
+    const state = snapshot();
+    expect(state.chunks.map((chunk) => chunk.content)).toEqual([
+      "replacement",
+      "second chunk",
+    ]);
+    expect(state.vectors).toHaveLength(1);
+    const hits = await next.findByContent("library", "1.0", "second", 5);
+    expect(hits.map((hit) => hit.content)).toContain("second chunk");
   });
 
-  it("rejects invalid document embeddings before replacing searchable content", async () => {
+  it("re-embeds stored chunks after a confirmed model change", async () => {
     const store = openStore();
     await store.initialize();
     await store.addDocuments("library", "1.0", 0, page());
-    const previous = snapshot();
-    responseVector = [];
-    await expect(
-      store.addDocuments("library", "1.0", 0, page("replacement")),
-    ).rejects.toThrow();
-    expect(snapshot()).toEqual(previous);
-  });
-
-  it("rejects a missing batch embedding without replacing old content", async () => {
-    const store = openStore();
-    await store.initialize();
-    await store.addDocuments("library", "1.0", 0, page());
-    const previous = snapshot();
-    server.use(
-      http.get(
-        "https://docs.example.com/llms.txt",
-        () => new HttpResponse(null, { status: 404 }),
-      ),
-      http.post("https://embeddings.example.com/v1/embeddings", () =>
-        HttpResponse.json({
-          object: "list",
-          data: [],
-          model: "text-embedding-3-small",
-          usage: { prompt_tokens: 0, total_tokens: 0 },
-        }),
-      ),
-    );
-    await expect(
-      store.addDocuments("library", "1.0", 0, page("replacement")),
-    ).rejects.toThrow();
-    expect(snapshot()).toEqual(previous);
-  });
-
-  it("preserves vectors if the provider fails while resolving a model change", async () => {
-    const store = openStore();
-    await store.initialize();
-    await store.addDocuments("library", "1.0", 0, page());
-    const previous = snapshot();
+    await drain(store);
     settings.app.embeddingModel = "openai:text-embedding-ada-002";
     const changed = openStore();
-    await expect(changed.initialize()).rejects.toThrow();
-    rejectEmbedding = true;
-    await expect(changed.resolveModelChange()).rejects.toThrow();
-    expect(snapshot()).toEqual(previous);
+    await expect(changed.initialize()).rejects.toBeInstanceOf(EmbeddingModelChangedError);
+    await changed.resolveModelChange();
+    expect(snapshot().vectors).toEqual([]);
+    expect(snapshot().chunks).toHaveLength(1);
+    await drain(changed);
+    expect(snapshot().vectors).toHaveLength(1);
+    expect(changed.getEmbeddingMetadata().model).toBe("openai:text-embedding-ada-002");
   });
 
   it("validates a cached model with an explicitly padded database dimension", async () => {
@@ -421,7 +438,7 @@ describe("Embedding readiness and atomic replacement", () => {
     markVectorDimensionSource(settings, true);
     await openStore().initialize();
     await expect(openStore().initialize()).resolves.toBeUndefined();
-    expect(requests).toBe(2);
+    expect(requests).toBe(0);
   });
 
   it("recovers unknown native width after a fresh-module restart with explicit padding", async () => {
@@ -433,6 +450,7 @@ describe("Embedding readiness and atomic replacement", () => {
     const first = openStore();
     await first.initialize();
     await first.addDocuments("library", "1.0", 0, page());
+    await drain(first);
     const previous = snapshot();
     const previousSearch = await first.findByContent("library", "1.0", "searchable", 5);
     await first.shutdown();
@@ -453,7 +471,7 @@ describe("Embedding readiness and atomic replacement", () => {
     stores.push(restarted);
     requests = 0;
     await expect(restarted.initialize()).resolves.toBeUndefined();
-    expect(requests).toBe(1);
+    expect(requests).toBe(0);
     expect(restarted.getEmbeddingMetadata()).toEqual({
       model: `openai:${model}`,
       dimension: "1536",
@@ -462,6 +480,17 @@ describe("Embedding readiness and atomic replacement", () => {
     expect(await restarted.findByContent("library", "1.0", "searchable", 5)).toEqual(
       previousSearch,
     );
+  });
+
+  it("starts with an unknown model and a configured width while the provider is down", async () => {
+    settings.app.embeddingModel = "openai:unknown-offline-model";
+    settings.embeddings.vectorDimension = 1024;
+    markVectorDimensionSource(settings, true);
+    rejectEmbedding = true;
+    const store = openStore();
+    await expect(store.initialize()).resolves.toBeUndefined();
+    await store.addDocuments("library", "1.0", 0, page());
+    expect(await store.findByContent("library", "1.0", "searchable", 5)).toHaveLength(1);
   });
 
   it("accepts a known wrapped model padded to a larger explicit database width", async () => {
@@ -489,12 +518,13 @@ describe("Embedding readiness and atomic replacement", () => {
     );
     const store = openStore();
     await expect(store.initialize()).resolves.toBeUndefined();
-    expect(probes).toBe(1);
+    expect(probes).toBe(0);
     expect(store.getEmbeddingMetadata()).toEqual({
       model: "gemini:embedding-001",
       dimension: "1536",
     });
     await store.addDocuments("library", "1.0", 0, page());
+    await drain(store);
     expect(snapshot().vectors).toHaveLength(1);
     expect(await store.findByContent("library", "1.0", "searchable", 5)).toHaveLength(1);
   });
@@ -506,6 +536,7 @@ describe("Embedding readiness and atomic replacement", () => {
     await store.initialize();
     expect(requests).toBe(1);
     await store.addDocuments("library", "1.0", 0, page());
+    await drain(store);
     expect(snapshot().vectors).toHaveLength(1);
   });
 
@@ -513,6 +544,7 @@ describe("Embedding readiness and atomic replacement", () => {
     const store = openStore();
     await store.initialize();
     await store.addDocuments("library", "1.0", 0, page());
+    await drain(store);
     const previous = snapshot();
     const pageId = (previous.pages[0] as { id: number }).id;
     const db = new Database(path.join(directory, "documents.db"));
@@ -591,24 +623,31 @@ describe("Embedding readiness and atomic replacement", () => {
           }),
       ),
     );
-    failRequest = requests + 2;
-    const id = await manager.enqueueScrapeJob("library", "1.0", {
-      url: "https://docs.example.com/root.md",
-      library: "library",
-      version: "1.0",
-      ignoreErrors: true,
-      scope: "hostname",
-      maxPages: 5,
-      maxDepth: 1,
-      scrapeMode: ScrapeMode.Fetch,
-    });
-    await expect(manager.waitForJobCompletion(id)).rejects.toThrow();
-    expect((await manager.getJob(id))?.status).toBe(PipelineJobStatus.FAILED);
-    expect(snapshot().pages).toHaveLength(1);
-    expect(snapshot().pages[0]).toMatchObject({
-      url: "https://docs.example.com/root",
-      content_url: "https://docs.example.com/root.md",
-    });
+    const db = new Database(path.join(directory, "documents.db"));
+    db.exec(
+      "CREATE TRIGGER reject_child BEFORE INSERT ON pages WHEN NEW.url LIKE '%child%' BEGIN SELECT RAISE(ABORT, 'controlled child failure'); END",
+    );
+    try {
+      const id = await manager.enqueueScrapeJob("library", "1.0", {
+        url: "https://docs.example.com/root.md",
+        library: "library",
+        version: "1.0",
+        ignoreErrors: true,
+        scope: "hostname",
+        maxPages: 5,
+        maxDepth: 1,
+        scrapeMode: ScrapeMode.Fetch,
+      });
+      await expect(manager.waitForJobCompletion(id)).rejects.toThrow();
+      expect((await manager.getJob(id))?.status).toBe(PipelineJobStatus.FAILED);
+      expect(snapshot().pages).toHaveLength(1);
+      expect(snapshot().pages[0]).toMatchObject({
+        url: "https://docs.example.com/root",
+        content_url: "https://docs.example.com/root.md",
+      });
+    } finally {
+      db.close();
+    }
   });
 
   it.each(["progress", "completion", "terminal failure"])(
@@ -663,6 +702,7 @@ describe("Embedding readiness and atomic replacement", () => {
     service = new DocumentManagementService(eventBus, settings);
     await service.initialize();
     await service.addScrapeResult("library", "1.0", 0, page());
+    await backlogDrained();
     manager = new PipelineManager(service, eventBus, {
       appConfig: settings,
       recoverJobs: false,
@@ -703,7 +743,7 @@ describe("Embedding readiness and atomic replacement", () => {
     expect(snapshot()).toEqual(previous);
   });
 
-  it("preserves a failed refresh and failed retry before replacing the page exactly once", async () => {
+  it("refreshes while the provider is down and embeds the new content once it recovers", async () => {
     const eventBus = new EventBusService();
     service = new DocumentManagementService(eventBus, settings);
     await service.initialize();
@@ -733,33 +773,28 @@ describe("Embedding readiness and atomic replacement", () => {
       scrapeMode: ScrapeMode.Fetch,
     });
     await manager.waitForJobCompletion(initialId);
-    const previous = snapshot();
-    const previousSearch = await service.searchStore("library", "1.0", "searchable");
+    await backlogDrained();
+
     body = "# Replacement\n\nUpdated searchable text.";
     etag = "new-validator";
     rejectEmbedding = true;
-    const failedId = await manager.enqueueRefreshJob("library", "1.0");
-    await expect(manager.waitForJobCompletion(failedId)).rejects.toThrow();
-    expect((await manager.getJob(failedId))?.status).toBe(PipelineJobStatus.FAILED);
-    expect(snapshot()).toEqual(previous);
-    const retryId = await manager.enqueueRefreshJob("library", "1.0");
-    await expect(manager.waitForJobCompletion(retryId)).rejects.toThrow();
-    expect((await manager.getJob(retryId))?.status).toBe(PipelineJobStatus.FAILED);
-    expect(snapshot()).toEqual(previous);
-    rejectEmbedding = false;
-    expect(await service.searchStore("library", "1.0", "searchable")).toEqual(
-      previousSearch,
-    );
-    const successId = await manager.enqueueRefreshJob("library", "1.0");
-    await manager.waitForJobCompletion(successId);
-    expect((await manager.getJob(successId))?.status).toBe(PipelineJobStatus.COMPLETED);
-    const replacement = snapshot();
-    expect(replacement.pages).toHaveLength(1);
-    expect(replacement.pages[0]).toMatchObject({ etag: "new-validator" });
-    expect(replacement.chunks).toHaveLength(1);
-    expect(replacement.chunks[0]).toMatchObject({
+    const refreshId = await manager.enqueueRefreshJob("library", "1.0");
+    await manager.waitForJobCompletion(refreshId);
+    expect((await manager.getJob(refreshId))?.status).toBe(PipelineJobStatus.COMPLETED);
+
+    const refreshed = snapshot();
+    expect(refreshed.pages).toHaveLength(1);
+    expect(refreshed.pages[0]).toMatchObject({ etag: "new-validator" });
+    expect(refreshed.chunks).toHaveLength(1);
+    expect(refreshed.chunks[0]).toMatchObject({
       content: expect.stringContaining("Updated searchable"),
+      embedding: null,
     });
-    expect(replacement.vectors).toHaveLength(1);
+    const hits = await service.searchStore("library", "1.0", "updated");
+    expect(hits[0]?.content).toContain("Updated searchable");
+
+    rejectEmbedding = false;
+    await backlogDrained();
+    expect(snapshot().vectors).toHaveLength(1);
   });
 });

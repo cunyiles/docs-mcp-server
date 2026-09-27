@@ -21,6 +21,7 @@ import {
 } from "../utils/version";
 import { DocumentRetrieverService } from "./DocumentRetrieverService";
 import { DocumentStore } from "./DocumentStore";
+import { EmbeddingBacklogWorker } from "./EmbeddingBacklogWorker";
 import type { EmbeddingModelConfig } from "./embeddings/EmbeddingConfig";
 import {
   LibraryNotFoundInStoreError,
@@ -56,6 +57,7 @@ export class DocumentManagementService {
   private readonly documentRetriever: DocumentRetrieverService;
   private readonly pipelines: ContentPipeline[];
   private readonly eventBus: EventBusService;
+  private backlogWorker: EmbeddingBacklogWorker | null = null;
 
   constructor(eventBus: EventBusService, appConfig: AppConfig) {
     this.appConfig = appConfig;
@@ -103,6 +105,17 @@ export class DocumentManagementService {
    */
   async initialize(): Promise<void> {
     await this.store.initialize();
+    this.startEmbeddingBacklog();
+  }
+
+  private startEmbeddingBacklog(): void {
+    this.backlogWorker?.stop();
+    this.backlogWorker = new EmbeddingBacklogWorker(
+      this.store,
+      this.appConfig.embeddings.paceMs,
+      this.appConfig.embeddings.retryBaseDelayMs,
+    );
+    this.backlogWorker.start();
   }
 
   /**
@@ -111,6 +124,7 @@ export class DocumentManagementService {
    */
   async resolveModelChange(): Promise<void> {
     await this.store.resolveModelChange();
+    this.startEmbeddingBacklog();
   }
 
   /**
@@ -119,6 +133,7 @@ export class DocumentManagementService {
 
   async shutdown(): Promise<void> {
     logger.debug("Shutting down store manager");
+    this.backlogWorker?.stop();
 
     // Cleanup all pipelines to prevent resource leaks (e.g., browser instances)
     await Promise.allSettled(this.pipelines.map((pipeline) => pipeline.close()));

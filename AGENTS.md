@@ -132,7 +132,8 @@ Unit + integration tests live next to the code they cover (`src/foo.ts` ↔ `src
 | `version-resolution-e2e.test.ts` | Version label normalization and resolution against a real SQLite store: write-path parity across entry points, tag/semver/prerelease resolution, listing order | none | yes |
 | `archive-integration.test.ts` | `LocalFileStrategy` archive (zip) traversal and extraction | fixture archive | yes |
 | `local-file-pdf-e2e.test.ts` | PDF in a `file://` directory is indexed alongside `.txt`/`.md` (regression for issue #394) | Xberg native deps | yes |
-| `vector-persistence-e2e.test.ts` | Embeddings land in `documents_vec` virtual table | MSW-mocked OpenAI | yes |
+| `vector-persistence-e2e.test.ts` | Embeddings land in `documents_vec` virtual table; readiness and page replacement with a failing provider | MSW-mocked OpenAI | yes |
+| `embedding-backlog-e2e.test.ts` | Through the MCP tools: collection completes while the provider answers 429, the backlog drains on recovery and after a restart, stored Markdown survives restart | MSW fake site and provider (`test/harness.ts`) | yes |
 | `vector-search-e2e.test.ts` | Full pipeline: scrape → split → embed → index → search | MSW-mocked OpenAI | yes |
 | `github-private-repo-e2e.test.ts` | Auth flow for private GitHub repo scraping | `GITHUB_TOKEN`; skips otherwise | yes (skips if no token) |
 | `docker-e2e.test.ts` | Production image: non-root user, Chromium present, Playwright scrape, Xberg PDF, bind-mounted docs folder recursively indexed via `file:///` | Docker daemon; `DOCKER_IMAGE_TAG` to reuse a prebuilt image | **no** — `npm run test:docker` |

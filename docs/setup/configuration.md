@@ -381,7 +381,9 @@ Settings for the vector embedding generation.
 
 | Option | Default | Description |
 |:-------|:--------|:------------|
-| `required` | `false` | Require a configured, reachable embedding provider at startup. Set `DOCS_MCP_EMBEDDINGS_REQUIRED=true` to probe the provider even when dimensions are known or cached. |
+| `required` | `false` | Require a configured embedding model and its credentials at startup. The provider is not called; indexing never waits for embeddings. |
+| `paceMs` | `0` | Minimum wait between embedding backlog requests (ms). Raise it to stay within a provider's quota. |
+| `retryBaseDelayMs` | `1000` | First backoff after a transient embedding failure (ms); doubles up to ten minutes. |
 | `batchSize` | `100` | Number of chunks to embed in one request. |
 | `batchChars` | `50000` | Maximum total characters per embedding batch. |
 | `requestTimeoutMs` | `30000` | Timeout for each embedding API request (ms). |

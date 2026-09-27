@@ -278,6 +278,7 @@ describe("HierarchicalAssemblyStrategy", () => {
         "text/typescript",
         0, // depth
         null, // content_url: retrieved from its own URL
+        null, // markdown
       );
       const pageId = pageResult.lastInsertRowid as number;
 
@@ -400,6 +401,7 @@ describe("HierarchicalAssemblyStrategy", () => {
         "text/typescript",
         0, // depth
         null, // content_url: retrieved from its own URL
+        null, // markdown
       );
       const pageAId = pageAResult.lastInsertRowid as number;
 
@@ -414,6 +416,7 @@ describe("HierarchicalAssemblyStrategy", () => {
         "text/typescript",
         0, // depth
         null, // content_url: retrieved from its own URL
+        null, // markdown
       );
       const pageBId = pageBResult.lastInsertRowid as number;
 
