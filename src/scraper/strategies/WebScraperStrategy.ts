@@ -6,12 +6,14 @@
 import fsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import * as cheerio from "cheerio";
 import { CancellationError } from "../../pipeline/errors";
 import type { ProgressCallback } from "../../types";
 import type { AppConfig } from "../../utils/config";
 import { logger } from "../../utils/logger";
 import { MimeTypeUtils } from "../../utils/mimeTypeUtils";
 import {
+  isMarkdownTwinPath,
   normalizeUrl,
   stripMarkdownExtension,
   type UrlNormalizerOptions,
@@ -142,6 +144,70 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     };
   }
 
+  /** Runs the first pipeline that can read the content; undefined when none can. */
+  private async runPipelines(
+    rawContent: RawContent,
+    source: string,
+    options: ScraperOptions,
+  ): Promise<PipelineResult | undefined> {
+    const contentBuffer = Buffer.isBuffer(rawContent.content)
+      ? rawContent.content
+      : Buffer.from(rawContent.content);
+    for (const pipeline of this.pipelines) {
+      if (pipeline.canProcess(rawContent.mimeType || "text/plain", contentBuffer)) {
+        logger.debug(
+          `Selected ${pipeline.constructor.name} for content type "${rawContent.mimeType}" (${source})`,
+        );
+        return pipeline.process({ ...rawContent, source }, options, this.fetcher);
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Fetches the Markdown twin an HTML page declares with
+   * `<link rel="alternate" type="text/markdown">`, when it has one.
+   *
+   * @returns The Markdown response, or undefined when the page declares none or
+   *   the twin cannot be read as Markdown.
+   */
+  private async fetchMarkdownAlternate(
+    rawContent: RawContent,
+    pageUrl: string,
+    options: ScraperOptions,
+    signal?: AbortSignal,
+  ): Promise<RawContent | undefined> {
+    const $ = cheerio.load(convertToString(rawContent.content, rawContent.charset));
+    const href = $('link[rel~="alternate"]')
+      .filter((_, el) => /^text\/(x-)?markdown\b/i.test($(el).attr("type") ?? ""))
+      .first()
+      .attr("href");
+    if (!href) return undefined;
+    let alternateUrl: string;
+    try {
+      alternateUrl = new URL(href, pageUrl).href;
+    } catch {
+      return undefined;
+    }
+    if (alternateUrl === pageUrl) return undefined;
+    try {
+      const fetched = await this.fetcher.fetch(alternateUrl, {
+        signal,
+        headers: options.headers,
+        followRedirects: options.followRedirects,
+      });
+      if (fetched.status !== FetchStatus.SUCCESS) return undefined;
+      if (!this.isAcceptableMarkdownVariant(fetched)) return undefined;
+      return MimeTypeUtils.isMarkdown(fetched.mimeType)
+        ? fetched
+        : { ...fetched, mimeType: "text/markdown" };
+    } catch (error) {
+      if (error instanceof CancellationError) throw error;
+      logger.debug(`Markdown alternate ${alternateUrl} unavailable: ${error}`);
+      return undefined;
+    }
+  }
+
   private buildMarkdownVariantUrl(url: string): string {
     const variant = new URL(url);
     if (variant.pathname.endsWith("/")) {
@@ -215,8 +281,7 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     } catch {
       return false;
     }
-    const mimeType = MimeTypeUtils.detectMimeTypeFromPath(pathname);
-    return mimeType ? MimeTypeUtils.isMarkdown(mimeType) : false;
+    return isMarkdownTwinPath(pathname);
   }
 
   private shouldDiscoverHtmlNavigation(
@@ -307,9 +372,22 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     effectiveSource: string,
     options: ScraperOptions,
   ): string[] {
+    // A query-string link brings its bare URL along, so a variant that serves
+    // the same content can be collapsed into it once both are collected.
+    const withBareUrls = links.flatMap((link) => {
+      try {
+        const target = new URL(link, effectiveSource);
+        if (target.search === "") return [link];
+        const bare = new URL(target.href);
+        bare.search = "";
+        return [link, bare.href];
+      } catch {
+        return [link];
+      }
+    });
     return [
       ...new Set(
-        links.flatMap((link) => {
+        withBareUrls.flatMap((link) => {
           try {
             const targetUrl = new URL(link, effectiveSource);
 
@@ -692,23 +770,7 @@ export class WebScraperStrategy extends BaseScraperStrategy {
       }
 
       // --- Start Pipeline Processing ---
-      let processed: PipelineResult | undefined;
-      for (const pipeline of this.pipelines) {
-        const contentBuffer = Buffer.isBuffer(rawContent.content)
-          ? rawContent.content
-          : Buffer.from(rawContent.content);
-        if (pipeline.canProcess(rawContent.mimeType || "text/plain", contentBuffer)) {
-          logger.debug(
-            `Selected ${pipeline.constructor.name} for content type "${rawContent.mimeType}" (${url})`,
-          );
-          processed = await pipeline.process(
-            { ...rawContent, source: effectiveSource },
-            options,
-            this.fetcher,
-          );
-          break;
-        }
-      }
+      let processed = await this.runPipelines(rawContent, effectiveSource, options);
 
       if (!processed) {
         // If content type is unsupported (e.g. binary/archive encountered during crawl), we just skip
@@ -729,6 +791,31 @@ export class WebScraperStrategy extends BaseScraperStrategy {
       // Log errors from pipeline
       for (const err of processed.errors ?? []) {
         logger.warn(`⚠️  Processing error for ${url}: ${err.message}`);
+      }
+
+      // A page that declares a Markdown alternate is recorded from it: the
+      // site's own Markdown is cleaner than HTML we convert, and the page's
+      // URL stays its identity. Links still come from both.
+      let representation = rawContent;
+      let representationUrl = fetchedSource;
+      if (MimeTypeUtils.isHtml(rawContent.mimeType)) {
+        const alternate = await this.fetchMarkdownAlternate(
+          rawContent,
+          effectiveSource,
+          options,
+          signal,
+        );
+        const fromAlternate = alternate
+          ? await this.runPipelines(alternate, effectiveSource, options)
+          : undefined;
+        if (alternate && fromAlternate?.textContent?.trim()) {
+          processed = {
+            ...fromAlternate,
+            links: [...(processed.links ?? []), ...(fromAlternate.links ?? [])],
+          };
+          representation = alternate;
+          representationUrl = alternate.source;
+        }
       }
 
       const navigationLinks =
@@ -779,11 +866,11 @@ export class WebScraperStrategy extends BaseScraperStrategy {
         // page's identity, so a later refresh requests that representation and
         // the validator below goes back to the resource that issued it. Equal
         // values would claim a divergence that does not exist.
-        contentUrl: effectiveSource === fetchedSource ? undefined : fetchedSource,
-        etag: rawContent.etag,
-        lastModified: rawContent.lastModified,
-        sourceContentType: rawContent.mimeType,
-        contentType: processed.contentType || rawContent.mimeType,
+        contentUrl: effectiveSource === representationUrl ? undefined : representationUrl,
+        etag: representation.etag,
+        lastModified: representation.lastModified,
+        sourceContentType: representation.mimeType,
+        contentType: processed.contentType || representation.mimeType,
         content: processed,
         links: filteredLinks,
         queueItems: llmsTxtQueueItems,

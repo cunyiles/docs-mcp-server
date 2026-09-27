@@ -124,6 +124,9 @@ export class PipelineWorker {
         throw new CancellationError("Job cancelled");
       }
 
+      // ponytail: variants are collapsed once the crawl ends, so the backlog may
+      // embed a variant that is then removed; collapse per page if that costs.
+      await this.store.collapseQueryVariants(library, version);
       if (stats && job.versionId !== undefined) {
         await this.store.setCollectionStats(job.versionId, stats);
       }

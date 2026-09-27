@@ -26,6 +26,8 @@ describe("PipelineWorker", () => {
       addScrapeResult: vi.fn().mockResolvedValue(undefined),
       removeAllDocuments: vi.fn().mockResolvedValue(undefined),
       deletePage: vi.fn().mockResolvedValue(undefined),
+      collapseQueryVariants: vi.fn().mockResolvedValue(0),
+      setCollectionStats: vi.fn().mockResolvedValue(undefined),
     };
 
     mockScraperService = {
