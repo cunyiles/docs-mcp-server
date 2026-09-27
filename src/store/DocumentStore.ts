@@ -25,6 +25,7 @@ import {
 } from "./errors";
 import type {
   ActivityHistory,
+  CollectionStats,
   CompactResult,
   DbChunkMetadata,
   DbChunkRank,
@@ -448,7 +449,16 @@ export class DocumentStore {
           -- oldest page for versions that predate status tracking.
           COALESCE(v.updated_at, MIN(p.created_at)) as indexedAt,
           COUNT(d.id) as documentCount,
-          COUNT(DISTINCT p.url) as uniqueUrlCount
+          COUNT(DISTINCT p.url) as uniqueUrlCount,
+          COUNT(DISTINCT d.page_id) as pagesCollected,
+          COUNT(DISTINCT d.page_id) - COUNT(DISTINCT CASE WHEN d.embedding IS NULL THEN d.page_id END) as pagesEmbedded,
+          v.last_collection_at as lastCollectionAt,
+          v.last_collection_status as lastCollectionStatus,
+          v.last_collection_error as lastCollectionError,
+          v.last_refresh_at as lastRefreshAt,
+          v.last_refresh_status as lastRefreshStatus,
+          v.last_refresh_error as lastRefreshError,
+          v.collection_stats as collectionStats
         FROM versions v
         JOIN libraries l ON v.library_id = l.id
         LEFT JOIN pages p ON p.version_id = v.id
@@ -1501,6 +1511,38 @@ export class DocumentStore {
   }
 
   /**
+   * Records how a collection or refresh run of a version ended.
+   * @param versionId The version the run belonged to.
+   * @param kind Whether the run collected the version afresh or refreshed it.
+   * @param status The run's final status.
+   * @param error The failure reason, if any.
+   */
+  async recordRunResult(
+    versionId: number,
+    kind: "collection" | "refresh",
+    status: VersionStatus,
+    error: string | null,
+  ): Promise<void> {
+    const column = kind === "refresh" ? "last_refresh" : "last_collection";
+    this.db
+      .prepare(
+        `UPDATE versions SET ${column}_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ${column}_status = ?, ${column}_error = ? WHERE id = ?`,
+      )
+      .run(status, error, versionId);
+  }
+
+  /**
+   * Replaces what the last run observed about a version's site.
+   * @param versionId The version the run belonged to.
+   * @param stats The observations, stored as JSON.
+   */
+  async setCollectionStats(versionId: number, stats: CollectionStats): Promise<void> {
+    this.db
+      .prepare("UPDATE versions SET collection_stats = ? WHERE id = ?")
+      .run(JSON.stringify(stats), versionId);
+  }
+
+  /**
    * Retrieves versions by their status.
    * @param statuses Array of statuses to filter by
    * @returns Array of version records matching the statuses
@@ -1686,18 +1728,10 @@ export class DocumentStore {
         // Format indexedAt to ISO string if available
         const indexedAtISO = row.indexedAt ? new Date(row.indexedAt).toISOString() : null;
 
+        const { library: _library, ...version } = row;
         libraryMap.get(library)?.push({
-          version: row.version,
-          versionId: row.versionId,
-          // Preserve raw string status here; DocumentManagementService will cast to VersionStatus
-          status: row.status,
-          errorMessage: row.errorMessage,
-          progressPages: row.progressPages,
-          progressMaxPages: row.progressMaxPages,
+          ...version,
           progressPagesIndexed: row.progressPagesIndexed ?? null,
-          sourceUrl: row.sourceUrl,
-          documentCount: row.documentCount,
-          uniqueUrlCount: row.uniqueUrlCount,
           indexedAt: indexedAtISO,
         });
       }

@@ -30,6 +30,7 @@ import {
 } from "./errors";
 import type {
   ActivityHistory,
+  CollectionStats,
   CompactResult,
   DbVersionWithLibrary,
   EmbeddingConfigInfo,
@@ -37,6 +38,7 @@ import type {
   LibrarySummary,
   ListVersionChunksOptions,
   ListVersionChunksResult,
+  RunResult,
   ScraperConfig,
   StoreSearchResult,
   VersionChunkStats,
@@ -46,6 +48,9 @@ import type {
   VersionSummary,
 } from "./types";
 import { normalizeVersionLabel, normalizeVersionRef } from "./types";
+
+/** A completed collection with fewer pages than this is flagged as suspect. */
+const SMALL_COLLECTION_PAGES = 5;
 
 /**
  * Provides semantic search capabilities across different versions of library documentation.
@@ -173,6 +178,21 @@ export class DocumentManagementService {
     return this.store.updateVersionProgress(versionId, pages, maxPages, pagesIndexed);
   }
 
+  /** Records how a collection or refresh run of a version ended. */
+  async recordRunResult(
+    versionId: number,
+    kind: "collection" | "refresh",
+    status: VersionStatus,
+    error: string | null,
+  ): Promise<void> {
+    return this.store.recordRunResult(versionId, kind, status, error);
+  }
+
+  /** Replaces what the last run observed about a version's site. */
+  async setCollectionStats(versionId: number, stats: CollectionStats): Promise<void> {
+    return this.store.setCollectionStats(versionId, stats);
+  }
+
   /**
    * Stores scraper options for a version to enable reproducible indexing.
    */
@@ -205,11 +225,21 @@ export class DocumentManagementService {
    */
   async listLibraries(): Promise<LibrarySummary[]> {
     const libMap = await this.store.queryLibraryVersions();
+    const embeddingsActive = this.store.getActiveEmbeddingConfig() !== null;
+    const run = (
+      at: string | null,
+      status: VersionStatus | null,
+      error: string | null,
+    ): RunResult | null => (at && status ? { at, status, error } : null);
     const summaries: LibrarySummary[] = [];
     for (const [library, versions] of libMap) {
       const vs = await Promise.all(
         versions.map(async (v) => {
           const scraperOptions = await this.store.getScraperOptions(v.versionId);
+          let collectionStats: CollectionStats | null = null;
+          try {
+            collectionStats = v.collectionStats ? JSON.parse(v.collectionStats) : null;
+          } catch {}
           return {
             id: v.versionId,
             ref: { library, version: v.version },
@@ -224,6 +254,20 @@ export class DocumentManagementService {
             indexedAt: v.indexedAt,
             sourceUrl: v.sourceUrl ?? undefined,
             preserveHashes: scraperOptions?.options.preserveHashes,
+            entryPoints: v.sourceUrl ? [v.sourceUrl] : [],
+            pagesCollected: v.pagesCollected,
+            pagesEmbedded: embeddingsActive ? v.pagesEmbedded : null,
+            lastCollection: run(
+              v.lastCollectionAt,
+              v.lastCollectionStatus,
+              v.lastCollectionError,
+            ),
+            lastRefresh: run(v.lastRefreshAt, v.lastRefreshStatus, v.lastRefreshError),
+            collectionStats,
+            // ponytail: fixed threshold; a witness-based expectation replaces it
+            // once witnesses report how many pages a site lists.
+            smallCollection:
+              v.status === "completed" && v.pagesCollected < SMALL_COLLECTION_PAGES,
           } satisfies VersionSummary;
         }),
       );

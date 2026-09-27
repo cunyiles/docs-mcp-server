@@ -1041,11 +1041,21 @@ describe("DocumentManagementService", () => {
                 documentCount: 3,
                 uniqueUrlCount: 2,
                 indexedAt: "2024-04-04T00:00:00.000Z",
+                pagesCollected: 2,
+                pagesEmbedded: 1,
+                lastCollectionAt: "2024-04-04T00:00:00.000Z",
+                lastCollectionStatus: "completed",
+                lastCollectionError: null,
+                lastRefreshAt: null,
+                lastRefreshStatus: null,
+                lastRefreshError: null,
+                collectionStats: null,
               },
             ],
           ],
         ] as any);
         mockStore.queryLibraryVersions.mockResolvedValue(mockLibraryMap as any);
+        mockStore.getActiveEmbeddingConfig.mockReturnValue({} as any);
 
         const result = await docService.listLibraries();
         expect(result).toEqual([
@@ -1059,6 +1069,17 @@ describe("DocumentManagementService", () => {
                 counts: { documents: 3, uniqueUrls: 2 },
                 indexedAt: "2024-04-04T00:00:00.000Z",
                 sourceUrl: undefined,
+                entryPoints: [],
+                pagesCollected: 2,
+                pagesEmbedded: 1,
+                lastCollection: {
+                  at: "2024-04-04T00:00:00.000Z",
+                  status: "completed",
+                  error: null,
+                },
+                lastRefresh: null,
+                collectionStats: null,
+                smallCollection: true,
               },
             ],
           },

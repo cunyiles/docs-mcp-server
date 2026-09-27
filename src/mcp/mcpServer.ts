@@ -4,6 +4,7 @@ import { PipelineJobStatus } from "../pipeline/types";
 import { TelemetryEvent, telemetry } from "../telemetry";
 import type { JobInfo } from "../tools";
 import { ToolError } from "../tools/errors";
+import { formatVersionStatus } from "../tools/ListLibrariesTool";
 import type { AppConfig } from "../utils/config";
 import { logger } from "../utils/logger";
 import type { McpServerTools } from "./tools";
@@ -310,12 +311,13 @@ Result ${i + 1}: ${r.url}
 ${r.content}\n`,
         );
 
+        const note = result.note ? `\n\n${result.note}` : "";
         if (formattedResults.length === 0) {
           return createResponse(
-            `No results found for '${query}' in ${library}. Try to use a different or more general query.`,
+            `No results found for '${query}' in ${library}. Try to use a different or more general query.${note}`,
           );
         }
-        return createResponse(formattedResults.join(""));
+        return createResponse(`${formattedResults.join("")}${note}`);
       } catch (error) {
         return createError(error);
       }
@@ -325,7 +327,7 @@ ${r.content}\n`,
   // List libraries tool
   server.tool(
     "list_libraries",
-    "List all indexed libraries.",
+    "List indexed libraries, one line per version: coverage (pages collected and embedded), entry points, how the last collection and refresh ended, and any problem such as a suspiciously small collection.",
     {
       // no params
     },
@@ -347,9 +349,10 @@ ${r.content}\n`,
           return createResponse("No libraries indexed yet.");
         }
 
-        return createResponse(
-          `Indexed libraries:\n\n${result.libraries.map((lib: { name: string }) => `- ${lib.name}`).join("\n")}`,
+        const lines = result.libraries.flatMap((lib) =>
+          lib.versions.map((version) => `- ${formatVersionStatus(lib.name, version)}`),
         );
+        return createResponse(`Indexed libraries:\n\n${lines.join("\n")}`);
       } catch (error) {
         return createError(error);
       }

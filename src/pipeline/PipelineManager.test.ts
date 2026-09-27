@@ -44,6 +44,13 @@ function existingLibrary(library: string, version: string, id = 1): LibrarySumma
         status: VersionStatus.COMPLETED,
         counts: { documents: 0, uniqueUrls: 0 },
         indexedAt: null,
+        entryPoints: [],
+        pagesCollected: 0,
+        pagesEmbedded: null,
+        lastCollection: null,
+        lastRefresh: null,
+        collectionStats: null,
+        smallCollection: false,
       },
     ],
   };
@@ -133,6 +140,7 @@ describe("PipelineManager", () => {
       // Database status tracking methods
       ensureLibraryAndVersion: vi.fn().mockResolvedValue(1), // Return mock version ID
       updateVersionStatus: vi.fn().mockResolvedValue(undefined),
+      recordRunResult: vi.fn().mockResolvedValue(undefined),
       storeScraperOptions: vi.fn().mockResolvedValue(undefined),
       updateVersionProgress: vi.fn().mockResolvedValue(undefined), // For progress tests
       getVersionsByStatus: vi.fn().mockResolvedValue([]),
@@ -539,6 +547,7 @@ describe("PipelineManager", () => {
       const recoveryMockStore = {
         ensureLibraryAndVersion: vi.fn().mockResolvedValue(1),
         updateVersionStatus: vi.fn().mockResolvedValue(undefined),
+        recordRunResult: vi.fn().mockResolvedValue(undefined),
         updateVersionProgress: vi.fn().mockResolvedValue(undefined),
         getVersionsByStatus: vi.fn().mockResolvedValue(mockInterruptedVersions),
         listLibraries: vi
@@ -1023,6 +1032,7 @@ describe("PipelineManager", () => {
         const recoveryMockStore = {
           ensureLibraryAndVersion: vi.fn().mockResolvedValue(1),
           updateVersionStatus: vi.fn().mockResolvedValue(undefined),
+          recordRunResult: vi.fn().mockResolvedValue(undefined),
           getVersionsByStatus: vi.fn().mockImplementation((statuses: string[]) => {
             if (statuses.includes("running") || statuses.includes("queued")) {
               return Promise.resolve(mockRunningVersions);
@@ -1072,6 +1082,7 @@ describe("PipelineManager", () => {
         const recoveryMockStore = {
           ensureLibraryAndVersion: vi.fn().mockResolvedValue(2),
           updateVersionStatus: vi.fn().mockResolvedValue(undefined),
+          recordRunResult: vi.fn().mockResolvedValue(undefined),
           getVersionsByStatus: vi.fn().mockImplementation((statuses: string[]) => {
             if (statuses.includes("running") || statuses.includes("queued")) {
               return Promise.resolve(mockQueuedVersions);
@@ -1125,6 +1136,7 @@ describe("PipelineManager", () => {
         const recoveryMockStore = {
           ensureLibraryAndVersion: vi.fn().mockResolvedValue(1),
           updateVersionStatus: vi.fn().mockResolvedValue(undefined),
+          recordRunResult: vi.fn().mockResolvedValue(undefined),
           getVersionsByStatus: vi.fn().mockResolvedValue(mockInterruptedVersions),
         };
 
@@ -1174,6 +1186,7 @@ describe("PipelineManager", () => {
         const recoveryMockStore = {
           ensureLibraryAndVersion: vi.fn().mockResolvedValue(1),
           updateVersionStatus: vi.fn().mockResolvedValue(undefined),
+          recordRunResult: vi.fn().mockResolvedValue(undefined),
           updateVersionProgress: vi.fn().mockResolvedValue(undefined),
           getVersionsByStatus: vi.fn().mockImplementation((statuses: string[]) => {
             if (statuses.includes("running") || statuses.includes("queued")) {
@@ -1239,6 +1252,7 @@ describe("PipelineManager", () => {
         const recoveryMockStore = {
           ensureLibraryAndVersion: vi.fn().mockResolvedValue(1),
           updateVersionStatus: vi.fn().mockResolvedValue(undefined),
+          recordRunResult: vi.fn().mockResolvedValue(undefined),
           getVersionsByStatus: vi.fn().mockImplementation((statuses: string[]) => {
             if (statuses.includes("running") || statuses.includes("queued")) {
               return Promise.resolve(mockRunningVersions);

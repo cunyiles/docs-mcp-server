@@ -1,8 +1,10 @@
 import { VersionNotFoundInStoreError } from "../store";
 import type { IDocumentManagement } from "../store/trpc/interfaces";
 import type { StoreSearchResult } from "../store/types";
+import { normalizeLibraryName, normalizeVersionLabel } from "../store/types";
 import { logger } from "../utils/logger";
 import { ValidationError } from "./errors";
+import { formatHealthNote, ListLibrariesTool } from "./ListLibrariesTool";
 
 export interface SearchToolOptions {
   library: string;
@@ -25,6 +27,8 @@ export interface SearchToolResultError {
 
 export interface SearchToolResult {
   results: StoreSearchResult[];
+  /** One line about the searched version's health, when something needs attention. */
+  note?: string;
 }
 
 /**
@@ -37,6 +41,27 @@ export class SearchTool {
 
   constructor(docService: IDocumentManagement) {
     this.docService = docService;
+  }
+
+  /**
+   * The searched version's health note, or undefined when it is healthy.
+   * Advisory only: a failure to read the status never fails the search.
+   */
+  private async healthNote(
+    library: string,
+    version: string | null | undefined,
+  ): Promise<string | undefined> {
+    try {
+      const { libraries } = await new ListLibrariesTool(this.docService).execute();
+      const target = normalizeLibraryName(library);
+      const info = libraries
+        .find((lib) => lib.name === target)
+        ?.versions.find((v) => v.version === normalizeVersionLabel(version));
+      return info ? formatHealthNote(target, info) : undefined;
+    } catch (error) {
+      logger.debug(`Could not read library status for search note: ${error}`);
+      return undefined;
+    }
   }
 
   async execute(options: SearchToolOptions): Promise<SearchToolResult> {
@@ -119,7 +144,7 @@ export class SearchTool {
       );
       logger.info(`✅ Found ${results.length} matching results`);
 
-      return { results };
+      return { results, note: await this.healthNote(library, versionToSearch) };
     } catch (error) {
       logger.error(
         `❌ Search failed: ${error instanceof Error ? error.message : "Unknown error"}`,

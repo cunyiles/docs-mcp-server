@@ -792,6 +792,18 @@ export class PipelineManager implements IPipeline {
 
       const dbStatus = this.mapJobStatusToVersionStatus(newStatus);
       await this.store.updateVersionStatus(versionId, dbStatus, errorMessage);
+      if (
+        newStatus === PipelineJobStatus.COMPLETED ||
+        newStatus === PipelineJobStatus.FAILED ||
+        newStatus === PipelineJobStatus.CANCELLED
+      ) {
+        await this.store.recordRunResult(
+          versionId,
+          job.scraperOptions.isRefresh ? "refresh" : "collection",
+          dbStatus,
+          errorMessage ?? null,
+        );
+      }
 
       // Store scraper options when job is first queued
       if (newStatus === PipelineJobStatus.QUEUED && job.scraperOptions) {
