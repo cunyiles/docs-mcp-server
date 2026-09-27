@@ -188,6 +188,16 @@ export class DocumentManagementService {
     return this.store.recordRunResult(versionId, kind, status, error);
   }
 
+  /** Removes query-string variants whose content equals their bare URL's. */
+  async collapseQueryVariants(library: string, version: string): Promise<number> {
+    const removed = await this.store.collapseQueryVariants(
+      library,
+      normalizeVersionLabel(version),
+    );
+    if (removed > 0) this.eventBus.emit(EventType.LIBRARY_CHANGE, undefined);
+    return removed;
+  }
+
   /** Replaces what the last run observed about a version's site. */
   async setCollectionStats(versionId: number, stats: CollectionStats): Promise<void> {
     return this.store.setCollectionStats(versionId, stats);

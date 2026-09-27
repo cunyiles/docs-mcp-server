@@ -125,6 +125,23 @@ export function extractPrimaryDomain(hostname: string): string {
 export type { UrlNormalizerOptions };
 
 /**
+ * Whether a URL path names a published Markdown twin of a page: a Markdown
+ * extension (`.md`, `.markdown`, …) or `.md.txt`, which some sites serve as
+ * `text/plain` beside every page.
+ *
+ * Takes the pathname rather than the URL: given a whole URL the detector would
+ * read a host like `example.md` as a Markdown file.
+ *
+ * @param pathname The URL path to test.
+ * @returns True when the path names a Markdown file.
+ */
+export function isMarkdownTwinPath(pathname: string): boolean {
+  if (/[^/]\.md\.txt$/i.test(pathname)) return true;
+  const detected = MimeTypeUtils.detectMimeTypeFromPath(pathname);
+  return !!detected && MimeTypeUtils.isMarkdown(detected);
+}
+
+/**
  * Rewrites a published Markdown file's URL to the page it represents.
  *
  * `https://example.com/guide.md` and `https://example.com/guide` name the same
@@ -147,16 +164,11 @@ export function stripMarkdownExtension(url: string): string {
     return url;
   }
 
-  // Gated on the shared detector rather than on "has a dot", so the name stays
-  // true and the set of Markdown extensions has one home. The pathname is passed
-  // deliberately: given a whole URL the detector would read a host like
-  // `example.md` as a Markdown file.
-  const detected = MimeTypeUtils.detectMimeTypeFromPath(parsed.pathname);
-  if (!detected || !MimeTypeUtils.isMarkdown(detected)) return url;
+  if (!isMarkdownTwinPath(parsed.pathname)) return url;
 
   // A leading dot is not an extension separator, so `/.md` is left alone — it
-  // names no page to fold onto.
-  const stripped = parsed.pathname.replace(/([^/])\.[^/.]*$/, "$1");
+  // names no page to fold onto. `.md.txt` is one extension here.
+  const stripped = parsed.pathname.replace(/([^/])(\.md\.txt|\.[^/.]*)$/i, "$1");
   if (stripped === parsed.pathname) return url;
 
   parsed.pathname = stripped;

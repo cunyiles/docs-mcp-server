@@ -257,6 +257,15 @@ describe("extractPrimaryDomain", () => {
 });
 
 describe("stripMarkdownExtension", () => {
+  it("treats .md.txt as one Markdown extension", () => {
+    expect(stripMarkdownExtension("https://example.com/docs/guide.md.txt")).toBe(
+      "https://example.com/docs/guide",
+    );
+    expect(stripMarkdownExtension("https://example.com/docs/notes.txt")).toBe(
+      "https://example.com/docs/notes.txt",
+    );
+  });
+
   it("strips a markdown extension to yield the canonical page URL", () => {
     expect(stripMarkdownExtension("https://react.dev/learn.md")).toBe(
       "https://react.dev/learn",

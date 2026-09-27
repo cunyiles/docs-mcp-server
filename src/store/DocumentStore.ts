@@ -1532,6 +1532,51 @@ export class DocumentStore {
   }
 
   /**
+   * Removes query-string variants that serve the same content as their bare URL.
+   *
+   * `/x?rec=A` and `/x` are one page when their Markdown is the same; a variant
+   * whose content differs (`/x?tab=kotlin`) is a page of its own. No parameter
+   * names are listed: the content decides.
+   *
+   * @param library Library name.
+   * @param version Version label.
+   * @returns How many variants were removed.
+   */
+  async collapseQueryVariants(library: string, version: string): Promise<number> {
+    const versionRow = this.statements.getVersionId.get(
+      normalizeLibraryName(library),
+      normalizeVersionLabel(version),
+    ) as { id: number } | undefined;
+    if (!versionRow) return 0;
+    const variants = this.db
+      .prepare<[number]>(
+        "SELECT id, url, markdown FROM pages WHERE version_id = ? AND instr(url, '?') > 0 AND markdown IS NOT NULL",
+      )
+      .all(versionRow.id) as Array<{ id: number; url: string; markdown: string }>;
+    const bareMarkdown = this.db.prepare<[number, string]>(
+      "SELECT markdown FROM pages WHERE version_id = ? AND url = ?",
+    );
+    const same = (a: string, b: string) =>
+      a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
+    let removed = 0;
+    this.db.transaction(() => {
+      for (const variant of variants) {
+        const bareUrl = variant.url.slice(0, variant.url.indexOf("?"));
+        const bare = bareMarkdown.get(versionRow.id, bareUrl) as
+          | { markdown: string | null }
+          | undefined;
+        if (bare?.markdown == null || !same(bare.markdown, variant.markdown)) continue;
+        this.statements.deleteDocumentsByPageId.run(variant.id);
+        this.statements.deletePage.run(variant.id);
+        removed++;
+      }
+    })();
+    if (removed > 0)
+      logger.debug(`Collapsed ${removed} query variant(s) into their bare URLs`);
+    return removed;
+  }
+
+  /**
    * Replaces what the last run observed about a version's site.
    * @param versionId The version the run belonged to.
    * @param stats The observations, stored as JSON.

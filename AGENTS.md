@@ -134,6 +134,7 @@ Unit + integration tests live next to the code they cover (`src/foo.ts` ↔ `src
 | `local-file-pdf-e2e.test.ts` | PDF in a `file://` directory is indexed alongside `.txt`/`.md` (regression for issue #394) | Xberg native deps | yes |
 | `vector-persistence-e2e.test.ts` | Embeddings land in `documents_vec` virtual table; readiness and page replacement with a failing provider | MSW-mocked OpenAI | yes |
 | `library-status-e2e.test.ts` | `list_libraries` status line (coverage, entry points, last collection and refresh) and the `search_docs` health note | MSW fake site and provider (`test/harness.ts`) | yes |
+| `page-identity-e2e.test.ts` | Through the MCP tools: `.md.txt` twins and a declared Markdown alternate index once under the page URL; query variants with identical content collapse, different ones stay | MSW fake site (`test/harness.ts`) | yes |
 | `crawler-identity-e2e.test.ts` | Honest configurable User-Agent with gzip, a site that redirects browser-looking clients to login, no browser for server-rendered HTML, Chromium for an empty JavaScript shell (counted in the status) | MSW fake site; Chromium for the shell case | yes |
 | `embedding-backlog-e2e.test.ts` | Through the MCP tools: collection completes while the provider answers 429, the backlog drains on recovery and after a restart, stored Markdown survives restart | MSW fake site and provider (`test/harness.ts`) | yes |
 | `vector-search-e2e.test.ts` | Full pipeline: scrape → split → embed → index → search | MSW-mocked OpenAI | yes |
