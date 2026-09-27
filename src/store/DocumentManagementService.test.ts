@@ -1055,7 +1055,7 @@ describe("DocumentManagementService", () => {
           ],
         ] as any);
         mockStore.queryLibraryVersions.mockResolvedValue(mockLibraryMap as any);
-        mockStore.getActiveEmbeddingConfig.mockReturnValue({} as any);
+        (mockStore as any).getActiveEmbeddingConfig = vi.fn().mockReturnValue({});
 
         const result = await docService.listLibraries();
         expect(result).toEqual([
