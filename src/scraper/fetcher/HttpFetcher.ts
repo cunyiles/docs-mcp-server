@@ -203,10 +203,8 @@ export class HttpFetcher implements ContentFetcher {
               }
 
               if (redirectCount >= MAX_REDIRECTS) {
-                throw new ScraperError(
-                  `Too many redirects while fetching ${source}`,
-                  false,
-                );
+                // A browser can complete redirects that require session cookies.
+                throw new ChallengeError(source, response.status, "redirect");
               }
 
               const redirectUrl = new URL(location, currentUrl).href;
