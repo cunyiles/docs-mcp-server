@@ -219,6 +219,46 @@ export interface VersionSummary {
   indexedAt: string | null; // ISO 8601
   sourceUrl?: string | null;
   preserveHashes?: boolean;
+  /** URLs the version is collected from. */
+  entryPoints: string[];
+  /** Pages holding content. */
+  pagesCollected: number;
+  /** Pages whose every chunk has a vector; null when no embedding model is active. */
+  pagesEmbedded: number | null;
+  lastCollection: RunResult | null;
+  lastRefresh: RunResult | null;
+  /** What the last run observed about the site. */
+  collectionStats: CollectionStats | null;
+  /** A completed collection with so few pages that the entry point is suspect. */
+  smallCollection: boolean;
+}
+
+/** How one collection or refresh run ended. */
+export interface RunResult {
+  /** ISO 8601 */
+  at: string;
+  status: VersionStatus;
+  error: string | null;
+}
+
+/** What a collection run observed about a site, shown in a library's status. */
+export interface CollectionStats {
+  /** Pages each witness listed within scope, by witness name. */
+  witnesses?: Record<string, number>;
+  /** Witnesses looked for but not found. */
+  absentWitnesses?: string[];
+  /** Pages the witnesses listed that are collected. */
+  listedCollected?: number;
+  /** Pages the witnesses listed, deduplicated. */
+  listed?: number;
+  /** Hosts that refused every way in, with the reason. */
+  refusedHosts?: Array<{ host: string; reason: string }>;
+  /** The way in that worked for a host that refused plain requests. */
+  hostRungs?: Record<string, string>;
+  /** Pages rendered in a browser. */
+  browserPages?: number;
+  /** Pages fetched with browser fingerprint impersonation. */
+  impersonatedPages?: number;
 }
 
 /**
@@ -346,6 +386,16 @@ export interface DbLibraryVersion {
   documentCount: number;
   uniqueUrlCount: number;
   indexedAt: string | null;
+  pagesCollected: number;
+  pagesEmbedded: number;
+  lastCollectionAt: string | null;
+  lastCollectionStatus: VersionStatus | null;
+  lastCollectionError: string | null;
+  lastRefreshAt: string | null;
+  lastRefreshStatus: VersionStatus | null;
+  lastRefreshError: string | null;
+  /** JSON-encoded {@link CollectionStats}. */
+  collectionStats: string | null;
 }
 
 /**
