@@ -129,8 +129,10 @@ export function createEmbeddingModel(
   // Parse provider and model name using the shared specification rules
   const { provider, model } = splitModelSpec(providerAndModel);
 
-  // Default configuration for each provider
-  const baseConfig = { stripNewLines: true };
+  // Default configuration for each provider. Retries are the embedding
+  // backlog's job (with backoff and Retry-After); client-side retries would
+  // stall a search's keyword fallback for a minute and double the pacing.
+  const baseConfig = { stripNewLines: true, maxRetries: 0 };
 
   switch (provider) {
     case "openai": {

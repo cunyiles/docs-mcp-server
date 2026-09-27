@@ -78,6 +78,24 @@ export class DimensionError extends StoreError {
 export class ConnectionError extends StoreError {}
 
 /**
+ * Error thrown when a batch of backlog chunks could not be embedded.
+ * Carries what the embedding worker needs to decide how to go on.
+ */
+export class EmbeddingBatchError extends StoreError {
+  constructor(
+    /** Chunks the failed request covered. */
+    public readonly chunkIds: number[],
+    /** True for rate limits, timeouts, 5xx and network faults: retry later. */
+    public readonly transient: boolean,
+    /** Wait the provider asked for, when it said so. */
+    public readonly retryAfterMs: number | undefined,
+    cause: unknown,
+  ) {
+    super(`Failed to embed ${chunkIds.length} chunk(s)`, cause);
+  }
+}
+
+/**
  * Error thrown when attempting to retrieve a document that doesn't exist.
  */
 export class DocumentNotFoundError extends StoreError {

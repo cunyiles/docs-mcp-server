@@ -8,7 +8,11 @@ import { loadConfig, markVectorDimensionSource } from "../utils/config";
 import { DocumentRetrieverService } from "./DocumentRetrieverService";
 import { DocumentStore } from "./DocumentStore";
 import { EmbeddingConfig } from "./embeddings/EmbeddingConfig";
-import { DimensionError, EmbeddingModelChangedError } from "./errors";
+import {
+  DimensionError,
+  EmbeddingBatchError,
+  EmbeddingModelChangedError,
+} from "./errors";
 import { VersionStatus } from "./types";
 
 const mockEmbeddingDimension = vi.hoisted(() => ({ value: 1536 }));
@@ -112,6 +116,11 @@ function createScrapeResult(
     etag: options?.etag,
     lastModified: options?.lastModified,
   } satisfies ScrapeResult;
+}
+
+/** Gives every pending chunk its vector, as the embedding backlog worker would. */
+async function embedAll(store: DocumentStore): Promise<void> {
+  while ((await store.embedPendingBatch()).length > 0) {}
 }
 
 /**
@@ -523,6 +532,7 @@ describe("DocumentStore - With Embeddings", () => {
           ["programming", "python"],
         ),
       );
+      await embedAll(store);
     });
 
     it("should perform hybrid search combining vector and FTS", async () => {
@@ -629,6 +639,7 @@ describe("DocumentStore - With Embeddings", () => {
             ["programming", "javascript", "frameworks"],
           ),
         );
+        await embedAll(store);
 
         // @ts-expect-error Accessing private property for testing
         const db = store.db;
@@ -718,6 +729,7 @@ describe("DocumentStore - With Embeddings", () => {
           ),
         );
       }
+      await embedAll(store);
 
       // Verify all documents were successfully embedded and stored
       expect(await store.checkDocumentExists("batchtest", "1.0.0")).toBe(true);
@@ -747,6 +759,7 @@ describe("DocumentStore - With Embeddings", () => {
           "doc",
         ]),
       );
+      await embedAll(store);
 
       // Embedding text should include structured metadata
       expect(mockEmbedDocuments).toHaveBeenCalledTimes(1);
@@ -841,6 +854,7 @@ describe("DocumentStore - With Embeddings", () => {
           ["test"],
         ),
       );
+      await embedAll(store);
 
       expect(mockEmbedDocuments).toHaveBeenCalled();
       expect(await store.checkDocumentExists("normaltest", "1.0.0")).toBe(true);
@@ -887,6 +901,7 @@ describe("DocumentStore - With Embeddings", () => {
       ];
 
       await store.addDocuments("retrytest", "1.0.0", 1, result);
+      await embedAll(store);
 
       // Should have been called multiple times (initial failure + successful retries)
       expect(callCount).toBeGreaterThan(1);
@@ -895,13 +910,6 @@ describe("DocumentStore - With Embeddings", () => {
 
     it("rejects an oversized single input without embedding a truncated prefix", async () => {
       const url = "https://example.com/large";
-      await store.addDocuments(
-        "size-test",
-        "1.0",
-        0,
-        createScrapeResult("Guide", url, "previous complete content"),
-      );
-      mockEmbedDocuments.mockClear();
       mockEmbedDocuments.mockImplementation(async (texts: string[]) => {
         if (texts.some((text) => text.includes("TAIL"))) {
           throw new Error("maximum context length exceeded");
@@ -909,19 +917,25 @@ describe("DocumentStore - With Embeddings", () => {
         return texts.map(() => new Array(1536).fill(0.1));
       });
       const content = `HEAD ${"x".repeat(1000)} TAIL`;
-      await expect(
-        store.addDocuments(
-          "size-test",
-          "1.0",
-          0,
-          createScrapeResult("Guide", url, content),
-        ),
-      ).rejects.toThrow("maximum context length");
+      await store.addDocuments(
+        "size-test",
+        "1.0",
+        0,
+        createScrapeResult("Guide", url, content),
+      );
+      const error = await embedAll(store).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(EmbeddingBatchError);
+      expect((error as EmbeddingBatchError).transient).toBe(false);
+      expect(String(error)).toContain("maximum context length");
       expect(mockEmbedDocuments).toHaveBeenCalledTimes(1);
       expect(mockEmbedDocuments.mock.calls[0][0][0]).toContain(content);
+      // The page is collected and keyword-searchable; only its vector is missing.
       expect(
         (await store.findChunksByUrl("size-test", "1.0", url)).map((c) => c.content),
-      ).toEqual(["previous complete content"]);
+      ).toEqual([content]);
+      expect((await store.getVersionStats("size-test", "1.0")).embeddedChunkCount).toBe(
+        0,
+      );
     });
 
     it("rejects the whole page when batch splitting reaches an oversized input", async () => {
@@ -941,11 +955,13 @@ describe("DocumentStore - With Embeddings", () => {
         }
         return texts.map(() => new Array(1536).fill(0.1));
       });
-      await expect(store.addDocuments("size-test", "1.0", 0, result)).rejects.toThrow(
-        "maximum context length",
-      );
+      await store.addDocuments("size-test", "1.0", 0, result);
+      await expect(embedAll(store)).rejects.toThrow("maximum context length");
       expect(mockEmbedDocuments).toHaveBeenCalledTimes(3);
-      expect(await store.checkDocumentExists("size-test", "1.0")).toBe(false);
+      expect(await store.checkDocumentExists("size-test", "1.0")).toBe(true);
+      expect((await store.getVersionStats("size-test", "1.0")).embeddedChunkCount).toBe(
+        0,
+      );
     });
 
     it("should detect various size error messages", async () => {
@@ -989,6 +1005,7 @@ describe("DocumentStore - With Embeddings", () => {
           section: { level: 0, path: [] },
         });
         await store.addDocuments(testLib, "1.0.0", 1, result);
+        await embedAll(store);
 
         // Should have retried and succeeded
         expect(callCount).toBeGreaterThan(1);
@@ -1008,21 +1025,21 @@ describe("DocumentStore - With Embeddings", () => {
         new Error("Network error: connection refused"),
       );
 
-      const error = await store
-        .addDocuments(
-          "networkerror",
-          "1.0.0",
-          1,
-          createScrapeResult(
-            "Network Error Test",
-            "https://example.com/network-error",
-            "Test content",
-            ["test"],
-          ),
-        )
-        .catch((error: unknown) => error);
+      await store.addDocuments(
+        "networkerror",
+        "1.0.0",
+        1,
+        createScrapeResult(
+          "Network Error Test",
+          "https://example.com/network-error",
+          "Test content",
+          ["test"],
+        ),
+      );
+      const error = await embedAll(store).catch((error: unknown) => error);
 
-      expect(error).toBeInstanceOf(Error);
+      expect(error).toBeInstanceOf(EmbeddingBatchError);
+      expect((error as EmbeddingBatchError).transient).toBe(true);
       const message = error instanceof Error ? error.message : String(error);
       expect(message).toContain("Failed to generate embeddings");
       expect(message).toContain("https://example.com/network-error");
@@ -1044,19 +1061,18 @@ describe("DocumentStore - With Embeddings", () => {
         new TypeError("Cannot read properties of undefined (reading '0')"),
       );
 
-      const error = await store
-        .addDocuments(
-          "malformedresponse",
-          "1.0.0",
-          1,
-          createScrapeResult(
-            "Malformed Response Test",
-            "https://example.com/malformed-response",
-            "Test content",
-            ["test"],
-          ),
-        )
-        .catch((error: unknown) => error);
+      await store.addDocuments(
+        "malformedresponse",
+        "1.0.0",
+        1,
+        createScrapeResult(
+          "Malformed Response Test",
+          "https://example.com/malformed-response",
+          "Test content",
+          ["test"],
+        ),
+      );
+      const error = await embedAll(store).catch((error: unknown) => error);
 
       expect(error).toBeInstanceOf(Error);
       const message = error instanceof Error ? error.message : String(error);
@@ -1104,6 +1120,7 @@ describe("DocumentStore - With Embeddings", () => {
       ];
 
       await store.addDocuments("multisplit", "1.0.0", 1, result);
+      await embedAll(store);
 
       // Should have been called multiple times due to splits
       expect(callCount).toBeGreaterThan(2);
@@ -1120,19 +1137,18 @@ describe("DocumentStore - With Embeddings", () => {
       // A single rejected input must remain intact.
       mockEmbedDocuments.mockRejectedValue(new Error("maximum context length exceeded"));
 
-      await expect(
-        store.addDocuments(
-          "alwaysfail",
-          "1.0.0",
-          1,
-          createScrapeResult(
-            "Always Fail",
-            "https://example.com/always-fail",
-            "x".repeat(100000), // Very large content
-            ["test"],
-          ),
+      await store.addDocuments(
+        "alwaysfail",
+        "1.0.0",
+        1,
+        createScrapeResult(
+          "Always Fail",
+          "https://example.com/always-fail",
+          "x".repeat(100000), // Very large content
+          ["test"],
         ),
-      ).rejects.toThrow("maximum context length exceeded");
+      );
+      await expect(embedAll(store)).rejects.toThrow("maximum context length exceeded");
 
       expect(mockEmbedDocuments).toHaveBeenCalledTimes(1);
     });
@@ -1996,6 +2012,7 @@ describe("DocumentStore - Common Functionality", () => {
           ["reference"],
         ),
       );
+      await embedAll(store);
     });
 
     it("paginates chunks and reports position/total within each page", async () => {
@@ -2302,6 +2319,7 @@ describe("DocumentStore - Embedding Model Change Safety", () => {
           "Some test content for embedding invalidation",
         ),
       );
+      await embedAll(store);
 
       // Verify embedding exists
       // @ts-expect-error Accessing private property for testing
@@ -2333,6 +2351,7 @@ describe("DocumentStore - Embedding Model Change Safety", () => {
           "Content for vec table test",
         ),
       );
+      await embedAll(store);
 
       // @ts-expect-error Accessing private property for testing
       const vecBefore = store.db
@@ -2548,6 +2567,7 @@ describe("DocumentStore - Embedding Model Change Safety", () => {
           "Content for no-op test",
         ),
       );
+      await embedAll(store);
 
       // @ts-expect-error Accessing private property for testing
       const vecBefore = store.db
@@ -3209,6 +3229,7 @@ describe.each([true, false])("Search row contract (embeddings=%s)", (vectors) =>
           0,
           createScrapeResult("Guide", `https://example.com/${page.slug}`, page.text),
         );
+        await embedAll(store);
       }
       const [hit] = await store.findByContent("lib", "1", "needle", 1);
       expect(hit.url).toBe("https://example.com/balanced");
@@ -3259,6 +3280,7 @@ describe.each([true, false])("Search row contract (embeddings=%s)", (vectors) =>
         0,
         createScrapeResult("Vector", "https://example.com/vector", "semantic candidate"),
       );
+      await embedAll(store);
       vi.mocked(provider.embedDocuments).mockResolvedValueOnce([vector(1)]);
       await store.addDocuments(
         "lib",
@@ -3266,6 +3288,7 @@ describe.each([true, false])("Search row contract (embeddings=%s)", (vectors) =>
         0,
         createScrapeResult("Keyword", "https://example.com/keyword", "rarekeyword"),
       );
+      await embedAll(store);
       const [hit] = await store.findByContent("lib", "1", "rarekeyword", 1);
       expect(hit.url).toBe("https://example.com/keyword");
       expect(hit.vec_rank).toBeUndefined();
@@ -3280,6 +3303,7 @@ describe.each([true, false])("Search row contract (embeddings=%s)", (vectors) =>
         0,
         createScrapeResult("Guide", "https://example.com/guide", "durable workflows"),
       );
+      await embedAll(store);
       const [hit] = await store.findByContent("lib", "1", "unmatchedkeyword", 5);
       expect(hit.vec_rank).toBe(1);
       expect(hit.fts_rank).toBeUndefined();

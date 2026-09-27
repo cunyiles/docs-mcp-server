@@ -19,6 +19,7 @@ import { FixedDimensionEmbeddings } from "./embeddings/FixedDimensionEmbeddings"
 import {
   ConnectionError,
   DimensionError,
+  EmbeddingBatchError,
   EmbeddingModelChangedError,
   StoreError,
 } from "./errors";
@@ -102,6 +103,32 @@ function losesToStoredRepresentation(
   );
 }
 
+/** HTTP status an embedding provider error carries, if any. */
+function embeddingErrorStatus(error: unknown): number | undefined {
+  const candidate = error as { status?: unknown; response?: { status?: unknown } } | null;
+  const status = candidate?.status ?? candidate?.response?.status;
+  return typeof status === "number" ? status : undefined;
+}
+
+/** Wait an embedding provider asked for via `Retry-After`, in milliseconds. */
+function embeddingRetryAfterMs(error: unknown): number | undefined {
+  const candidate = error as {
+    retryAfterMs?: unknown;
+    headers?: { get?: (name: string) => string | null } & Record<string, unknown>;
+  } | null;
+  if (typeof candidate?.retryAfterMs === "number") return candidate.retryAfterMs;
+  const headers = candidate?.headers;
+  const raw =
+    typeof headers?.get === "function"
+      ? headers.get("retry-after")
+      : headers?.["retry-after"];
+  if (typeof raw !== "string" || raw.trim() === "") return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const date = Date.parse(raw);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
+}
+
 /** The row `getPageId` returns. Declared once so its two readers agree. */
 interface PageIdRow {
   id: number;
@@ -130,9 +157,11 @@ export class DocumentStore {
   private readonly embeddingBatchChars: number;
   private readonly embeddingInitTimeoutMs: number;
   private modelDimension: number | null = null;
-  private probedDimension: number | null = null;
   private readonly embeddingConfig?: EmbeddingModelConfig | null;
   private isVectorSearchEnabled: boolean = false;
+
+  /** Called after a write adds chunks without vectors, so a waiting embedder can wake. */
+  onBacklogGrew?: () => void;
 
   /**
    * Returns the active embedding configuration if vector search is enabled,
@@ -162,6 +191,7 @@ export class DocumentStore {
         string | null,
         string | null,
         number | null,
+        string | null,
         string | null,
       ]
     >;
@@ -325,9 +355,10 @@ export class DocumentStore {
           string | null,
           number | null,
           string | null,
+          string | null,
         ]
       >(
-        "INSERT INTO pages (version_id, url, title, etag, last_modified, source_content_type, content_type, depth, content_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(version_id, url) DO UPDATE SET title = excluded.title, source_content_type = excluded.source_content_type, content_type = excluded.content_type, etag = excluded.etag, last_modified = excluded.last_modified, depth = excluded.depth, content_url = excluded.content_url",
+        "INSERT INTO pages (version_id, url, title, etag, last_modified, source_content_type, content_type, depth, content_url, markdown) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(version_id, url) DO UPDATE SET title = excluded.title, source_content_type = excluded.source_content_type, content_type = excluded.content_type, etag = excluded.etag, last_modified = excluded.last_modified, depth = excluded.depth, content_url = excluded.content_url, markdown = excluded.markdown",
       ),
       // Returns the row shape described by `PageIdRow`.
       getPageId: this.db.prepare<[number, string]>(
@@ -778,7 +809,6 @@ export class DocumentStore {
       ) {
         throw new StoreError("Embedding provider returned an invalid test vector");
       }
-      this.probedDimension = testVector.length;
       return testVector.length;
     } finally {
       if (timeoutId !== undefined) {
@@ -787,7 +817,12 @@ export class DocumentStore {
     }
   }
 
-  /** Verifies required semantic readiness before any vector-table replacement. */
+  /**
+   * Verifies that required embeddings have a configured provider.
+   *
+   * The provider is not called: collection never waits for it, and a provider
+   * that is down or rate limiting at startup only delays the embedding backlog.
+   */
   private async verifyRequiredEmbeddings(): Promise<void> {
     if (!this.config.embeddings.required) return;
     const config = this.embeddingConfig;
@@ -800,26 +835,6 @@ export class DocumentStore {
       throw new StoreError(
         `Embeddings are required but credentials for ${config.provider} are missing`,
       );
-    }
-    try {
-      this.embeddings ??= this.createEmbeddingClient(this.dbDimension);
-      const dimension =
-        this.probedDimension ?? (await this.detectEmbeddingDimension(this.embeddings));
-      // Stored metadata records storage width, which can include padding. An
-      // unknown model's native width must be recovered from this live probe.
-      const nativeDimension = this.modelDimension ?? dimension;
-      const expectedDimension =
-        this.embeddings instanceof FixedDimensionEmbeddings
-          ? this.dbDimension
-          : nativeDimension;
-      if (dimension !== expectedDimension || dimension > this.dbDimension) {
-        throw new StoreError(
-          `Embedding probe dimension ${dimension} does not match expected dimension ${expectedDimension} within database dimension ${this.dbDimension}`,
-        );
-      }
-      this.modelDimension ??= dimension;
-    } catch (error) {
-      throw new StoreError("Required embedding readiness probe failed", error);
     }
   }
 
@@ -874,7 +889,17 @@ export class DocumentStore {
 
       if (nativeDimension === null) {
         this.embeddings = this.createEmbeddingClient(this.dbDimension);
-        nativeDimension = await this.detectEmbeddingDimension(this.embeddings);
+        try {
+          nativeDimension = await this.detectEmbeddingDimension(this.embeddings);
+        } catch (error) {
+          // With the storage width configured, an unreachable provider only
+          // delays the embedding backlog; it must not stop the server.
+          if (!isVectorDimensionExplicit(this.config)) throw error;
+          logger.warn(
+            `⚠️  Embedding provider probe failed; using configured dimension ${this.dbDimension}: ${error}`,
+          );
+          return;
+        }
         nativeDimensionSource = "embedding provider probe";
       }
 
@@ -1905,6 +1930,7 @@ export class DocumentStore {
           page.contentType,
           depth,
           page.contentUrl ?? null,
+          "",
         );
 
         // Clear any chunks the page had before it became empty. Without this the
@@ -1926,9 +1952,9 @@ export class DocumentStore {
   }
 
   /**
-   * Stores documents with library and version metadata, generating embeddings
-   * for vector similarity search. Uses the new pages table to normalize page-level
-   * metadata and avoid duplication across document chunks.
+   * Stores a page's Markdown and chunks, replacing what was stored for it.
+   * Chunks enter the embedding backlog; vectors are added later by
+   * {@link embedPendingBatch}.
    */
   async addDocuments(
     library: string,
@@ -1945,122 +1971,23 @@ export class DocumentStore {
 
       // Resolve library and version IDs (creates them if they don't exist)
       const versionId = await this.resolveVersionId(library, version);
-      const existingPage = this.statements.getPageId.get(versionId, url) as
-        | PageIdRow
-        | undefined;
 
-      // Checked here as an optimisation only — a write that is going to be
-      // dropped should not first pay for a billed embedding round-trip. The
-      // authoritative check is repeated inside the write transaction below,
-      // because this snapshot is taken before the embedding await and a
-      // concurrent write for the same identity can land in between.
-      //
-      // Taken only when this write has no previous row to retire. Retiring has
-      // to happen inside that transaction, so returning early with one pending
-      // would strand it: the losing write is the only thing that knows the old
-      // spelling folded into this identity, and the row would stay searchable
-      // and lose again on every later refresh.
-      if (
-        previousPageId === undefined &&
-        losesToStoredRepresentation(
-          existingPage,
-          result.sourceContentType,
-          result.isAdditionalRepresentation,
-        )
-      ) {
-        logger.debug(
-          `Keeping stored ${existingPage?.source_content_type} representation of ${url}; ignoring ${result.sourceContentType} version`,
-        );
-        return;
-      }
-
-      // Generate embeddings in batch only if vector search is enabled
-      let paddedEmbeddings: number[][] = [];
-
-      if (this.isVectorSearchEnabled) {
-        const texts = chunks.map((chunk) => {
-          const header = `<title>${title}</title>\n<url>${url}</url>\n<path>${(chunk.section.path || []).join(" / ")}</path>\n`;
-          return `${header}${chunk.content}`;
-        });
-
-        // Validate chunk body sizes before creating embeddings.
-        // Note: We compare the chunk body (without the metadata header) against maxChunkSize,
-        // because the splitter's size budget applies to the content body only. The metadata
-        // header (title, URL, path) is expected overhead added after splitting.
-        for (let i = 0; i < chunks.length; i++) {
-          const bodySize = chunks[i].content.length;
-          if (bodySize > this.splitterMaxChunkSize) {
-            logger.warn(
-              `⚠️  Chunk ${i + 1}/${chunks.length} body exceeds max size: ${bodySize} > ${this.splitterMaxChunkSize} chars (URL: ${url})`,
-            );
-          }
-        }
-
-        // Batch embedding creation to avoid token limit errors
-        const maxBatchChars = this.embeddingBatchChars;
-        const rawEmbeddings: number[][] = [];
-
-        let currentBatch: string[] = [];
-        let currentBatchSize = 0;
-        let batchCount = 0;
-
-        const processEmbeddingBatch = async (isFinalBatch = false) => {
-          batchCount++;
-          const batchTexts = currentBatch;
-          const batchChars = currentBatchSize;
-          logger.debug(
-            `Processing ${isFinalBatch ? "final " : ""}embedding batch ${batchCount}: ${batchTexts.length} texts, ${batchChars} chars`,
+      for (let i = 0; i < chunks.length; i++) {
+        const bodySize = chunks[i].content.length;
+        if (bodySize > this.splitterMaxChunkSize) {
+          logger.warn(
+            `⚠️  Chunk ${i + 1}/${chunks.length} body exceeds max size: ${bodySize} > ${this.splitterMaxChunkSize} chars (URL: ${url})`,
           );
-
-          try {
-            const batchEmbeddings = await this.embedDocumentsWithRetry(batchTexts);
-            rawEmbeddings.push(...batchEmbeddings);
-          } catch (error) {
-            throw this.createEmbeddingConnectionError(error, {
-              url,
-              batchIndex: batchCount,
-              batchTextCount: batchTexts.length,
-              batchChars,
-              totalChunks: chunks.length,
-            });
-          }
-
-          currentBatch = [];
-          currentBatchSize = 0;
-        };
-
-        for (const text of texts) {
-          const textSize = text.length;
-
-          // If adding this text would exceed the limit, process the current batch first
-          if (currentBatchSize + textSize > maxBatchChars && currentBatch.length > 0) {
-            await processEmbeddingBatch();
-          }
-
-          // Add text to current batch
-          currentBatch.push(text);
-          currentBatchSize += textSize;
-
-          // Also respect the count-based limit for APIs that have per-request item limits
-          if (currentBatch.length >= this.embeddingBatchSize) {
-            await processEmbeddingBatch();
-          }
         }
-
-        // Process any remaining texts in the final batch
-        if (currentBatch.length > 0) {
-          await processEmbeddingBatch(true);
-        }
-        paddedEmbeddings = rawEmbeddings.map((vector) => this.padVector(vector));
       }
 
-      // Insert documents in a transaction
+      // Chunks are written without vectors: embedding is a separate layer that
+      // drains the backlog at the provider's pace, so a slow or refusing
+      // provider never holds up or fails collection.
       const transaction = this.db.transaction((): boolean => {
-        // Re-read inside the transaction. The snapshot above predates the
-        // embedding await, so when both representations of one identity are
-        // processed concurrently each can observe no row, and both would insert
-        // — leaving two chunk sets under one page. Reading and writing in the
-        // same synchronous transaction closes that window.
+        // Read and written in one synchronous transaction, so two
+        // representations of one identity processed concurrently cannot both
+        // observe no row and leave two chunk sets under one page.
         const current = this.statements.getPageId.get(versionId, url) as
           | PageIdRow
           | undefined;
@@ -2114,6 +2041,7 @@ export class DocumentStore {
           // NULL means "retrieved from its own URL"; the strategy reports this
           // only when the two genuinely differ.
           result.contentUrl ?? null,
+          result.textContent ?? null,
         );
 
         // Query for the page ID since we can't use RETURNING
@@ -2125,13 +2053,9 @@ export class DocumentStore {
         }
         const pageId = insertedPage.id;
 
-        // Then insert document chunks linked to their pages
-        let docIndex = 0;
         for (let i = 0; i < chunks.length; i++) {
           const chunk = chunks[i];
-
-          // Insert document chunk
-          const result = this.statements.insertDocument.run(
+          this.statements.insertDocument.run(
             pageId,
             chunk.content,
             JSON.stringify({
@@ -2141,28 +2065,112 @@ export class DocumentStore {
             } satisfies DbChunkMetadata),
             i, // sort_order within this page
           );
-          const rowId = result.lastInsertRowid;
-
-          // Insert into vector table only if vector search is enabled
-          if (this.isVectorSearchEnabled && paddedEmbeddings.length > 0) {
-            this.statements.insertEmbedding.run(
-              JSON.stringify(paddedEmbeddings[docIndex]),
-              BigInt(rowId),
-            );
-          }
-
-          docIndex++;
         }
         return true;
       });
 
-      transaction();
+      if (transaction()) this.onBacklogGrew?.();
     } catch (error) {
       if (error instanceof StoreError) {
         throw error;
       }
       throw new ConnectionError("Failed to add documents to store", error);
     }
+  }
+
+  /**
+   * Embeds the oldest chunks that have no vector yet, as one provider request.
+   *
+   * Chunks replaced while the request was in flight are simply not updated:
+   * chunk ids are never reused, so a stale vector cannot land on new content.
+   *
+   * @param options.limit Most chunks to send; defaults to the configured batch size.
+   * @param options.skip Chunk ids to leave out, e.g. ones the provider rejected alone.
+   * @returns Ids of the chunks that received a vector; empty when nothing is
+   *   pending or vector search is disabled.
+   * @throws {EmbeddingBatchError} When the provider fails or returns unusable vectors.
+   */
+  async embedPendingBatch(
+    options: { limit?: number; skip?: Iterable<number> } = {},
+  ): Promise<number[]> {
+    if (!this.isVectorSearchEnabled || this.embeddings === null || !this.db.open) {
+      return [];
+    }
+    const rows = this.db
+      .prepare<[string, number]>(
+        `SELECT d.id, d.content, d.metadata, p.title, p.url
+         FROM documents d JOIN pages p ON p.id = d.page_id
+         WHERE d.embedding IS NULL AND d.id NOT IN (SELECT value FROM json_each(?))
+         ORDER BY d.id LIMIT ?`,
+      )
+      .all(
+        JSON.stringify([...(options.skip ?? [])]),
+        options.limit ?? this.embeddingBatchSize,
+      ) as Array<{
+      id: number;
+      content: string;
+      metadata: string | null;
+      title: string | null;
+      url: string;
+    }>;
+
+    // Stay within the request size budget; the first chunk always goes.
+    const batch: typeof rows = [];
+    let chars = 0;
+    for (const row of rows) {
+      if (batch.length > 0 && chars + row.content.length > this.embeddingBatchChars)
+        break;
+      batch.push(row);
+      chars += row.content.length;
+    }
+    if (batch.length === 0) return [];
+
+    const ids = batch.map((row) => row.id);
+    const texts = batch.map((row) => {
+      let path: string[] = [];
+      try {
+        path = (JSON.parse(row.metadata ?? "{}") as DbChunkMetadata).path ?? [];
+      } catch {}
+      return `<title>${row.title ?? ""}</title>\n<url>${row.url}</url>\n<path>${path.join(" / ")}</path>\n${row.content}`;
+    });
+
+    let vectors: number[][];
+    try {
+      const raw = await this.embedDocumentsWithRetry(texts);
+      if (raw.length !== texts.length) {
+        throw new StoreError(
+          `Embedding provider returned ${raw.length} vectors for ${texts.length} inputs`,
+        );
+      }
+      vectors = raw.map((vector) => this.padVector(vector));
+    } catch (error) {
+      const status = embeddingErrorStatus(error);
+      const transient =
+        !(error instanceof StoreError) &&
+        !this.isInputSizeError(error) &&
+        (status === undefined || status === 408 || status === 429 || status >= 500);
+      throw new EmbeddingBatchError(
+        ids,
+        transient,
+        embeddingRetryAfterMs(error),
+        this.createEmbeddingConnectionError(error, {
+          url: batch[0].url,
+          batchIndex: 1,
+          batchTextCount: texts.length,
+          batchChars: chars,
+          totalChunks: texts.length,
+        }),
+      );
+    }
+
+    // The store may have been shut down while the request was in flight.
+    if (!this.db.open) return [];
+    this.db.transaction(() => {
+      vectors.forEach((vector, i) => {
+        this.statements.insertEmbedding.run(JSON.stringify(vector), BigInt(ids[i]));
+      });
+    })();
+    return ids;
   }
 
   /**
@@ -2385,11 +2393,18 @@ export class DocumentStore {
 
       const { id: versionId, library_id: libraryId } = versionRow;
 
+      // A provider that is rate limiting or down degrades search to keyword
+      // ranking rather than failing it; collected pages stay findable.
+      let embedding: number[] | null = null;
       if (this.isVectorSearchEnabled && this.embeddings !== null) {
-        // Hybrid search: vector + full-text search with RRF ranking
-        const rawEmbedding = await this.embeddings.embedQuery(query);
-        const embedding = this.padVector(rawEmbedding);
+        try {
+          embedding = this.padVector(await this.embeddings.embedQuery(query));
+        } catch (error) {
+          logger.warn(`⚠️  Query embedding failed, using keyword search only: ${error}`);
+        }
+      }
 
+      if (embedding !== null) {
         // Apply overfetch factor to both vector and FTS searches for better recall
         const overfetchLimit = Math.max(1, limit * this.searchOverfetchFactor);
 

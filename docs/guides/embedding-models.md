@@ -150,17 +150,25 @@ When you change the embedding model or vector dimension after initial setup, exi
 - All stored embedding vectors are set to NULL
 - The vector search index (`documents_vec`) is recreated empty with the new dimension
 - Full-text search continues working for all existing documents
-- Libraries must be re-scraped to regenerate embeddings with the new model
+- The embedding backlog re-embeds the stored chunks with the new model; no re-scrape is needed
 
 ### Vector Dimension Override
 
-The vector dimension defaults to the model's native dimension (e.g., 1536 for `text-embedding-3-small`). For unknown OpenAI-compatible models, the server detects the native dimension with a startup probe on first successful initialization, stores that detected size in database metadata, and reuses it on later startups for the same model. Required mode still probes the provider on every startup. You can override it with `embeddings.vectorDimension` in the config file or `DOCS_MCP_EMBEDDINGS_VECTOR_DIMENSION` as an environment variable. The value must be a positive integer (minimum 1).
+The vector dimension defaults to the model's native dimension (e.g., 1536 for `text-embedding-3-small`). For unknown OpenAI-compatible models, the server detects the native dimension with a startup probe on first successful initialization, stores that detected size in database metadata, and reuses it on later startups for the same model. When the dimension is set explicitly, a failed probe does not stop startup. You can override it with `embeddings.vectorDimension` in the config file or `DOCS_MCP_EMBEDDINGS_VECTOR_DIMENSION` as an environment variable. The value must be a positive integer (minimum 1).
 
+### Embedding Backlog
+
+Indexing does not wait for embeddings. A scraped page's Markdown, chunks and full-text index are written at once, so the page is searchable by keyword immediately. Chunks without a vector form the embedding backlog, which a background worker drains:
+
+- `embeddings.paceMs` (`DOCS_MCP_EMBEDDINGS_PACE_MS`, default `0`) is the minimum wait between backlog requests. Raise it to stay within a provider's free quota.
+- Rate limits, timeouts, 5xx responses and network faults are retried with exponential backoff starting at `embeddings.retryBaseDelayMs` (default `1000`) and capped at ten minutes. A `Retry-After` header is honoured.
+- A batch the provider rejects outright is retried chunk by chunk; a chunk rejected on its own is retried an hour later.
+- The backlog lives in the database, so a restart resumes where it stopped. After a confirmed model change, the stored chunks are embedded again without re-scraping.
+
+Search is hybrid wherever vectors exist and falls back to keyword ranking when the query cannot be embedded.
 
 ### Required Embedding Readiness
 
-Set `embeddings.required: true` in configuration or `DOCS_MCP_EMBEDDINGS_REQUIRED=true` to require semantic search. Startup rejects missing model configuration, missing credentials, an unreachable provider, or an invalid probe vector. The probe uses `embeddings.initTimeoutMs` even when the model dimension is known or cached. A successful dimension-detection probe also serves as the readiness probe.
+Set `embeddings.required: true` in configuration or `DOCS_MCP_EMBEDDINGS_REQUIRED=true` to require semantic search. Startup rejects a missing model configuration or missing credentials. The provider itself is not called at startup: a provider that is down or rate limiting only delays the embedding backlog.
 
-After successful initialization the server logs `Vector search enabled` with the model and vector dimension. Required mode emits this line after its provider probe succeeds. The probe verifies availability at startup; later embedding and query failures still surface as errors.
-
-The default is `false`, which keeps full-text-only operation available without a model or credentials. Embedding or database persistence errors fail indexing jobs in either mode. Fetch `ignoreErrors` does not suppress persistence failures. Page replacement commits content, vectors, metadata, and response validators together after embeddings succeed. A failed refresh keeps the previous page searchable, and refresh retries preserve existing pages while fetching incomplete versions unconditionally. An explicit clean scrape still clears the selected version before crawling.
+The default is `false`, which keeps full-text-only operation available without a model or credentials. Database persistence errors fail indexing jobs in either mode; embedding errors never do. Fetch `ignoreErrors` does not suppress persistence failures. Page replacement commits content, metadata and response validators together. Refresh retries preserve existing pages while fetching incomplete versions unconditionally. An explicit clean scrape still clears the selected version before crawling.

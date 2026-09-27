@@ -156,6 +156,10 @@ export const DEFAULT_CONFIG = {
     requestTimeoutMs: 30_000,
     initTimeoutMs: 30_000,
     vectorDimension: 1536,
+    /** Minimum wait between embedding backlog requests; 0 sends them back to back. */
+    paceMs: 0,
+    /** First wait after a transient embedding failure; doubles up to ten minutes. */
+    retryBaseDelayMs: 1000,
   },
   db: {
     migrationMaxRetries: 5,
@@ -361,6 +365,12 @@ export const AppConfigSchema = z.object({
         .int()
         .min(1, "embedding dimension must be at least 1")
         .default(DEFAULT_CONFIG.embeddings.vectorDimension),
+      paceMs: z.coerce.number().int().min(0).default(DEFAULT_CONFIG.embeddings.paceMs),
+      retryBaseDelayMs: z.coerce
+        .number()
+        .int()
+        .min(1)
+        .default(DEFAULT_CONFIG.embeddings.retryBaseDelayMs),
     })
     .default(DEFAULT_CONFIG.embeddings),
   db: z
