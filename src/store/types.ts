@@ -1,4 +1,4 @@
-import type { ScrapeMode } from "../scraper/types";
+import type { CollectionStats, ScrapeMode } from "../scraper/types";
 
 /**
  * Database page record type matching the pages table schema
@@ -241,25 +241,7 @@ export interface RunResult {
   error: string | null;
 }
 
-/** What a collection run observed about a site, shown in a library's status. */
-export interface CollectionStats {
-  /** Pages each witness listed within scope, by witness name. */
-  witnesses?: Record<string, number>;
-  /** Witnesses looked for but not found. */
-  absentWitnesses?: string[];
-  /** Pages the witnesses listed that are collected. */
-  listedCollected?: number;
-  /** Pages the witnesses listed, deduplicated. */
-  listed?: number;
-  /** Hosts that refused every way in, with the reason. */
-  refusedHosts?: Array<{ host: string; reason: string }>;
-  /** The way in that worked for a host that refused plain requests. */
-  hostRungs?: Record<string, string>;
-  /** Pages rendered in a browser. */
-  browserPages?: number;
-  /** Pages fetched with browser fingerprint impersonation. */
-  impersonatedPages?: number;
-}
+export type { CollectionStats } from "../scraper/types";
 
 /**
  * Summary of a library and its versions for API/UI consumption.

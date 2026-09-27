@@ -10,6 +10,7 @@ import { normalizeUrl, type UrlNormalizerOptions } from "../../utils/url";
 import { FetchStatus } from "../fetcher/types";
 import type { PipelineResult } from "../pipelines/types";
 import {
+  type CollectionStats,
   PageOutcome,
   type QueueItem,
   type ScrapeResult,
@@ -70,6 +71,8 @@ export interface ProcessItemResult {
    * decides whether the response validator may be stored.
    */
   pipelineFailed?: boolean;
+  /** True when a browser rendered or fetched this item. */
+  renderedInBrowser?: boolean;
   /** Any non-critical errors encountered during processing. This may be an empty array if no errors were encountered or if the content was not processed. */
   status: FetchStatus;
 }
@@ -119,6 +122,8 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
   protected canonicalBaseUrl?: URL; // Final URL after initial redirect (depth 0)
   protected completedChildPageAttempts = 0;
   protected failedChildPages = 0;
+  /** What this run observed about the site; returned by {@link scrape}. */
+  protected stats: CollectionStats = {};
 
   /**
    * The point at which the crawl stops, expressed in processed items.
@@ -428,6 +433,9 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
           // Pass signal to processItem
           const result = await this.processItem(item, options, signal);
           throwIfBatchAborted();
+          if (result.renderedInBrowser) {
+            this.stats.browserPages = (this.stats.browserPages ?? 0) + 1;
+          }
 
           if (result.status === FetchStatus.NOT_MODIFIED) {
             // File/page hasn't changed, skip processing but count as processed
@@ -723,7 +731,8 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
     options: ScraperOptions,
     progressCallback: ProgressCallback<ScraperProgressEvent>,
     signal?: AbortSignal, // Add signal
-  ): Promise<void> {
+  ): Promise<CollectionStats> {
+    this.stats = {};
     this.visited.clear();
     this.storedIdentities.clear();
     this.pageCount = 0;
@@ -820,6 +829,7 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
 
       queue.push(...newUrls);
     }
+    return this.stats;
   }
 
   /**

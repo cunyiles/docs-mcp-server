@@ -74,6 +74,8 @@ export interface RawContent {
    * - NOT_FOUND: Resource doesn't exist (should be removed from index)
    */
   status: FetchStatus;
+  /** Set when a browser fetched the content. */
+  renderedInBrowser?: boolean;
 }
 
 /**

@@ -26,6 +26,9 @@ export interface MiddlewareContext {
 
   /** Optional fetcher instance for resolving resources relative to the source. */
   fetcher?: ContentFetcher;
+
+  /** Set when a browser rendered the content. */
+  renderedInBrowser?: boolean;
 }
 
 /**

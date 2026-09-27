@@ -11,12 +11,9 @@ import { type AppConfig, defaults } from "../../utils/config";
 import { logger } from "../../utils/logger";
 import { MimeTypeUtils } from "../../utils/mimeTypeUtils";
 import { BrowserFetcher } from "../fetcher";
-import {
-  DEFAULT_BROWSER_USER_AGENT,
-  getHeader,
-  withMarkdownPreferredAccept,
-} from "../fetcher/headers";
+import { getHeader, withMarkdownPreferredAccept } from "../fetcher/headers";
 import { ScrapeMode } from "../types";
+import { needsBrowserRendering } from "../utils/renderSignals";
 import { SimpleMemoryCache } from "../utils/SimpleMemoryCache";
 import { isBlockedSubresource } from "./subresourceBlocklist";
 import type { ContentProcessorMiddleware, MiddlewareContext } from "./types";
@@ -1094,6 +1091,14 @@ export class HtmlPlaywrightMiddleware implements ContentProcessorMiddleware {
       return;
     }
 
+    // In auto mode a browser runs only for pages that cannot be read as
+    // served: an empty JavaScript shell or a frameset.
+    if (scrapeMode === ScrapeMode.Auto && !needsBrowserRendering(context.content)) {
+      logger.debug(`Reading ${context.source} as served; no rendering needed.`);
+      await next();
+      return;
+    }
+
     logger.debug(
       `Running Playwright rendering for ${context.source} (scrapeMode: '${scrapeMode}')`,
     );
@@ -1115,7 +1120,9 @@ export class HtmlPlaywrightMiddleware implements ContentProcessorMiddleware {
 
       // Always create a browser context (with or without credentials)
       browserContext = await browser.newContext({
-        userAgent: getHeader(customHeaders, "user-agent") || DEFAULT_BROWSER_USER_AGENT,
+        // Rendering a shell is not a disguise: keep the crawler's own identity.
+        userAgent:
+          getHeader(customHeaders, "user-agent") || this.config.fetcher.userAgent,
         viewport: { width: 1920, height: 1080 },
         ignoreHTTPSErrors: this.accessPolicy.shouldAllowInvalidTls(
           "https://browser-context.local",
@@ -1233,6 +1240,7 @@ export class HtmlPlaywrightMiddleware implements ContentProcessorMiddleware {
 
     if (renderedHtml !== null) {
       context.content = renderedHtml;
+      context.renderedInBrowser = true;
       logger.debug(
         `Playwright middleware updated content for ${context.source}. Proceeding.`,
       );

@@ -64,6 +64,8 @@ const createMockScraperOptions = (
   followRedirects: true,
   excludeSelectors: excludeSelectors || [],
   ignoreErrors: false,
+  // These tests exercise rendering itself; auto mode only renders shells.
+  scrapeMode: ScrapeMode.Playwright,
 });
 
 // Helper to create a basic context for pipeline tests
@@ -336,6 +338,23 @@ describe("HtmlPlaywrightMiddleware", () => {
       expect(context.content).toBe(initialHtml);
       expect(context.errors).toHaveLength(0);
       expect(next).toHaveBeenCalled();
+    });
+
+    it("reads server-rendered HTML as served in auto mode, without a browser", async () => {
+      const initialHtml = `<html><body><main><p>${"Server rendered text. ".repeat(10)}</p></main><script src="/app.js"></script></body></html>`;
+      const context = createPipelineTestContext(initialHtml, "https://example.com/ssr", {
+        scrapeMode: ScrapeMode.Auto,
+      });
+      const launchSpy = vi.spyOn(chromium, "launch");
+      const next = vi.fn();
+
+      await playwrightMiddleware.process(context, next);
+
+      expect(launchSpy).not.toHaveBeenCalled();
+      expect(context.content).toBe(initialHtml);
+      expect(context.renderedInBrowser).toBeUndefined();
+      expect(next).toHaveBeenCalled();
+      launchSpy.mockRestore();
     });
   });
 

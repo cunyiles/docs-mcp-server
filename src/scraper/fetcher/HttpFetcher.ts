@@ -12,7 +12,6 @@ import {
 } from "../../utils/errors";
 import { logger } from "../../utils/logger";
 import { MimeTypeUtils } from "../../utils/mimeTypeUtils";
-import { FingerprintGenerator } from "./FingerprintGenerator";
 import { withMarkdownPreferredAccept } from "./headers";
 import {
   type ContentFetcher,
@@ -67,14 +66,14 @@ export class HttpFetcher implements ContentFetcher {
     "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
   ];
 
-  private fingerprintGenerator: FingerprintGenerator;
+  private readonly userAgent: string;
   private readonly accessPolicy: ScraperAccessPolicy;
 
   constructor(scraperConfig: AppConfig["scraper"]) {
     this.maxRetriesDefault = scraperConfig.fetcher.maxRetries;
     this.baseDelayDefaultMs = scraperConfig.fetcher.baseDelayMs;
     this.timeoutDefaultMs = scraperConfig.fetcher.timeoutMs;
-    this.fingerprintGenerator = new FingerprintGenerator();
+    this.userAgent = scraperConfig.fetcher.userAgent;
     this.accessPolicy = new ScraperAccessPolicy(scraperConfig.security);
   }
 
@@ -122,11 +121,12 @@ export class HttpFetcher implements ContentFetcher {
         let redirectCount = 0;
 
         while (true) {
-          const fingerprint = this.fingerprintGenerator.generateHeaders();
+          // An honest identity, not a browser disguise: some sites send
+          // browser-looking clients to a login page and serve crawlers directly.
           const headers = withMarkdownPreferredAccept(
             {
-              ...fingerprint,
-              ...options?.headers, // User-provided headers override generated ones
+              "User-Agent": this.userAgent,
+              ...options?.headers, // User-provided headers override the defaults
             },
             options?.headers,
           );

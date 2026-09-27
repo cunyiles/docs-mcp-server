@@ -198,9 +198,12 @@ Settings controlling the web scraping behavior.
 | `browserTimeoutMs` | `30000` | Timeout for the browser instance (ms). |
 | `fetcher.maxRetries` | `6` | Number of retries for failed requests. |
 | `fetcher.baseDelayMs` | `1000` | Initial delay for exponential backoff (ms). |
+| `fetcher.userAgent` | `docs-mcp-server (+https://github.com/arabold/docs-mcp-server)` | The crawler's identity on every request (`DOCS_MCP_SCRAPER_FETCHER_USER_AGENT`). Name your deployment and a contact here. Requests are plain HTTP with gzip; browser fingerprint headers are not sent. |
 | `document.maxSize` | `10485760` | Maximum size (bytes) for PDF/Office documents. |
 
 _Note: Scraper settings are often overridden per-job via CLI arguments like `--max-pages`._
+
+In the default `auto` scrape mode HTML is read as served. A browser renders a page only when it is an empty JavaScript shell (scripts and next to no visible text) or a frameset, and each library's status counts how many pages needed it.
 
 Use `scraper.preserveHashes` only for documentation sites that use hash-based SPA routes such as `https://docs.example.com/#/guide`.
 Leave it disabled for normal sites, where hashes usually point to anchors within the same page.

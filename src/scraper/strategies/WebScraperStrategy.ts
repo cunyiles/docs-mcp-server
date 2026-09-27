@@ -28,7 +28,12 @@ import {
 } from "../pipelines/capability";
 import { PipelineFactory } from "../pipelines/PipelineFactory";
 import type { ContentPipeline, PipelineResult } from "../pipelines/types";
-import type { QueueItem, ScraperOptions, ScraperProgressEvent } from "../types";
+import type {
+  CollectionStats,
+  QueueItem,
+  ScraperOptions,
+  ScraperProgressEvent,
+} from "../types";
 import { convertToString } from "../utils/buffer";
 import { isLlmsTxtUrl, type LlmsTxtResult, parseLlmsTxt } from "../utils/llmsTxtParser";
 import { isFileLikePath, isPathDescendant } from "../utils/scope";
@@ -763,6 +768,7 @@ export class WebScraperStrategy extends BaseScraperStrategy {
           // run means we learned nothing about it, which is a different fact and
           // gets different handling downstream.
           pipelineFailed,
+          renderedInBrowser: rawContent.renderedInBrowser || processed.renderedInBrowser,
           status: FetchStatus.SUCCESS,
         };
       }
@@ -781,6 +787,7 @@ export class WebScraperStrategy extends BaseScraperStrategy {
         content: processed,
         links: filteredLinks,
         queueItems: llmsTxtQueueItems,
+        renderedInBrowser: rawContent.renderedInBrowser || processed.renderedInBrowser,
         status: FetchStatus.SUCCESS,
       };
     } catch (error) {
@@ -794,7 +801,7 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     options: ScraperOptions,
     progressCallback: ProgressCallback<ScraperProgressEvent>,
     signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<CollectionStats> {
     this.pendingLlmsTxtProbe = null;
     this.pendingLlmsTxtProbe = await this.probeLlmsTxt(
       options.url,
@@ -803,7 +810,7 @@ export class WebScraperStrategy extends BaseScraperStrategy {
       signal,
     );
 
-    await super.scrape(options, progressCallback, signal);
+    return super.scrape(options, progressCallback, signal);
   }
 
   private async processRootArchive(

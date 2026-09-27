@@ -210,6 +210,7 @@ export class BrowserFetcher implements ContentFetcher {
         source: finalUrl,
         etag,
         status: FetchStatus.SUCCESS,
+        renderedInBrowser: true,
       } satisfies RawContent;
     } catch (error) {
       if (options?.signal?.aborted) {
@@ -315,6 +316,7 @@ export class BrowserFetcher implements ContentFetcher {
       source: finalUrl,
       etag: response.headers().etag,
       status: FetchStatus.SUCCESS,
+      renderedInBrowser: true,
     } satisfies RawContent;
   }
 

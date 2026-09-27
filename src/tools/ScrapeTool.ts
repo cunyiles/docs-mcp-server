@@ -30,7 +30,7 @@ export interface ScrapeToolOptions {
      * Determines the HTML processing strategy.
      * - 'fetch': Use a simple DOM parser (faster, less JS support).
      * - 'playwright': Use a headless browser (slower, full JS support).
-     * - 'auto': Automatically select the best strategy (currently defaults to 'playwright').
+     * - 'auto': Read HTML as served; render only empty JavaScript shells and framesets.
      * @default ScrapeMode.Auto
      */
     scrapeMode?: ScrapeMode;

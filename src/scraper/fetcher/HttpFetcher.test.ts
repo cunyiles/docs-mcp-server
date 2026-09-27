@@ -330,7 +330,7 @@ describe("HttpFetcher", () => {
     });
   });
 
-  it("should generate fingerprint headers", async () => {
+  it("sends the configured crawler identity rather than browser fingerprint headers", async () => {
     const fetcher = createFetcher();
     const mockResponse = {
       data: Readable.from(
@@ -349,13 +349,12 @@ describe("HttpFetcher", () => {
       "https://example.com",
       expect.objectContaining({
         responseType: "stream",
-        headers: expect.objectContaining({
-          "user-agent": expect.any(String),
+        headers: {
+          "User-Agent": DEFAULT_CONFIG.scraper.fetcher.userAgent,
           Accept: "text/markdown, text/html;q=0.9, */*;q=0.8",
-          "accept-language": expect.any(String),
           // Verify that our custom Accept-Encoding header is set (excluding zstd)
           "Accept-Encoding": "gzip, deflate, br",
-        }),
+        },
         // Defaulted from config: axios has none of its own, so leaving it
         // undefined let a stalled server hold the worker indefinitely.
         timeout: DEFAULT_CONFIG.scraper.fetcher.timeoutMs,
