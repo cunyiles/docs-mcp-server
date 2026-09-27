@@ -318,7 +318,7 @@ describe("BaseScraperStrategy", () => {
       status: FetchStatus.NOT_FOUND,
     });
 
-    await expect(strategy.scrape(options, progressCallback)).resolves.toBeUndefined();
+    await expect(strategy.scrape(options, progressCallback)).resolves.toEqual({});
     expect(progressCallback).toHaveBeenCalledWith(
       expect.objectContaining({
         currentUrl: "https://example.com/",
@@ -359,7 +359,7 @@ describe("BaseScraperStrategy", () => {
         status: FetchStatus.NOT_FOUND,
       });
 
-    await expect(strategy.scrape(options, progressCallback)).resolves.toBeUndefined();
+    await expect(strategy.scrape(options, progressCallback)).resolves.toEqual({});
 
     const deletedCalls = progressCallback.mock.calls.filter((call) => call[0].deleted);
     expect(deletedCalls).toHaveLength(0);
@@ -511,7 +511,7 @@ describe("BaseScraperStrategy", () => {
       };
     });
 
-    await expect(strategy.scrape(options, progressCallback)).resolves.toBeUndefined();
+    await expect(strategy.scrape(options, progressCallback)).resolves.toEqual({});
     expect(strategy.processItem).toHaveBeenCalledTimes(11);
   });
 
@@ -558,7 +558,7 @@ describe("BaseScraperStrategy", () => {
       };
     });
 
-    await expect(strategy.scrape(options, progressCallback)).resolves.toBeUndefined();
+    await expect(strategy.scrape(options, progressCallback)).resolves.toEqual({});
     expect(progressCallback).toHaveBeenCalledTimes(11);
   });
 
@@ -1657,7 +1657,7 @@ describe("BaseScraperStrategy skipped (unprocessable) items", () => {
 
     await expect(
       strategy.scrape(baseOptions(), vi.fn<ProgressCallback<ScraperProgressEvent>>()),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({});
   });
 
   it("still aborts when genuine failures exceed the threshold alongside skips", async () => {
@@ -1725,7 +1725,7 @@ describe("BaseScraperStrategy skipped (unprocessable) items", () => {
 
     await expect(
       strategy.scrape(baseOptions(), vi.fn<ProgressCallback<ScraperProgressEvent>>()),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({});
   });
 
   it("does not fail a refresh when a stored depth-0 page becomes unprocessable", async () => {
@@ -1745,7 +1745,7 @@ describe("BaseScraperStrategy skipped (unprocessable) items", () => {
         },
         vi.fn<ProgressCallback<ScraperProgressEvent>>(),
       ),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({});
   });
 
   it("fails the job when the start URL itself is unprocessable", async () => {

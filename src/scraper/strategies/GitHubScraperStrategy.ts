@@ -5,7 +5,12 @@ import { logger } from "../../utils/logger";
 import { MimeTypeUtils } from "../../utils/mimeTypeUtils";
 import { HttpFetcher } from "../fetcher";
 import { FetchStatus } from "../fetcher/types";
-import type { QueueItem, ScraperOptions, ScraperProgressEvent } from "../types";
+import type {
+  CollectionStats,
+  QueueItem,
+  ScraperOptions,
+  ScraperProgressEvent,
+} from "../types";
 import { shouldIncludeUrl } from "../utils/patternMatcher";
 import { BaseScraperStrategy, type ProcessItemResult } from "./BaseScraperStrategy";
 import type {
@@ -698,7 +703,7 @@ export class GitHubScraperStrategy extends BaseScraperStrategy {
     options: ScraperOptions,
     progressCallback: ProgressCallback<ScraperProgressEvent>,
     signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<CollectionStats> {
     const url = new URL(options.url);
     if (!url.hostname.includes("github.com")) {
       throw new Error("URL must be a GitHub URL");
@@ -710,7 +715,7 @@ export class GitHubScraperStrategy extends BaseScraperStrategy {
     // The processItem method will discover all wiki and repo file URLs
     // The base scraper will automatically deduplicate URLs from initialQueue
     try {
-      await super.scrape(options, progressCallback, signal);
+      return await super.scrape(options, progressCallback, signal);
     } finally {
       this.resolvedAuthHeaders = undefined;
       this.resolvedAuthKey = undefined;

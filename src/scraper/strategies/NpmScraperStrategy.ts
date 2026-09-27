@@ -1,6 +1,11 @@
 import type { ProgressCallback } from "../../types";
 import type { AppConfig } from "../../utils/config";
-import type { ScraperOptions, ScraperProgressEvent, ScraperStrategy } from "../types";
+import type {
+  CollectionStats,
+  ScraperOptions,
+  ScraperProgressEvent,
+  ScraperStrategy,
+} from "../types";
 import { WebScraperStrategy } from "./WebScraperStrategy";
 
 export class NpmScraperStrategy implements ScraperStrategy {
@@ -25,9 +30,9 @@ export class NpmScraperStrategy implements ScraperStrategy {
     options: ScraperOptions,
     progressCallback: ProgressCallback<ScraperProgressEvent>,
     signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<CollectionStats> {
     // Use default strategy with our configuration, passing the signal
-    await this.defaultStrategy.scrape(options, progressCallback, signal);
+    return this.defaultStrategy.scrape(options, progressCallback, signal);
   }
 
   /**

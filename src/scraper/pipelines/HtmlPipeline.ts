@@ -118,6 +118,7 @@ export class HtmlPipeline extends BasePipeline {
       links: context.links,
       errors: context.errors,
       chunks,
+      renderedInBrowser: context.renderedInBrowser,
     };
   }
 

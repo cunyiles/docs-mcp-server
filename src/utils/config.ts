@@ -119,6 +119,12 @@ export const DEFAULT_CONFIG = {
       timeoutMs: 30_000,
       maxCacheItems: 200,
       maxCacheItemSizeBytes: 500 * 1024,
+      /**
+       * The crawler's honest identity. Operators should name themselves and a
+       * contact here; browser-looking identities make some sites redirect to a
+       * login page instead of serving their documentation.
+       */
+      userAgent: "docs-mcp-server (+https://github.com/arabold/docs-mcp-server)",
     },
     document: {
       maxSize: 10 * 1024 * 1024, // 10MB max size for PDF/Office documents
@@ -270,6 +276,11 @@ export const AppConfigSchema = z.object({
             .number()
             .int()
             .default(DEFAULT_CONFIG.scraper.fetcher.maxCacheItemSizeBytes),
+          userAgent: z
+            .string()
+            .trim()
+            .min(1)
+            .default(DEFAULT_CONFIG.scraper.fetcher.userAgent),
         })
         .default(DEFAULT_CONFIG.scraper.fetcher),
       document: z

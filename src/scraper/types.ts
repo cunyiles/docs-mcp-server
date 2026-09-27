@@ -36,16 +36,37 @@ export enum ScrapeMode {
   Auto = "auto",
 }
 
+/** What a collection run observed about a site, shown in a library's status. */
+export interface CollectionStats {
+  /** Pages each witness listed within scope, by witness name. */
+  witnesses?: Record<string, number>;
+  /** Witnesses looked for but not found. */
+  absentWitnesses?: string[];
+  /** Pages the witnesses listed that are collected. */
+  listedCollected?: number;
+  /** Pages the witnesses listed, deduplicated. */
+  listed?: number;
+  /** Hosts that refused every way in, with the reason. */
+  refusedHosts?: Array<{ host: string; reason: string }>;
+  /** The way in that worked for a host that refused plain requests. */
+  hostRungs?: Record<string, string>;
+  /** Pages rendered in a browser. */
+  browserPages?: number;
+  /** Pages fetched with browser fingerprint impersonation. */
+  impersonatedPages?: number;
+}
+
 /**
  * Strategy interface for implementing different scraping behaviors
  */
 export interface ScraperStrategy {
   canHandle(url: string): boolean;
+  /** Scrapes, reporting each page through the callback; resolves to what the run observed. */
   scrape(
     options: ScraperOptions,
     progressCallback: ProgressCallback<ScraperProgressEvent>,
     signal?: AbortSignal, // Add optional signal
-  ): Promise<void>;
+  ): Promise<CollectionStats | undefined>;
 
   /**
    * Cleanup resources used by this strategy (e.g., pipeline browser instances).
@@ -97,7 +118,7 @@ export interface ScraperOptions {
    * Determines the HTML processing strategy.
    * - 'fetch': Use a simple DOM parser (faster, less JS support).
    * - 'playwright': Use a headless browser (slower, full JS support).
-   * - 'auto': Automatically select the best strategy (currently defaults to 'playwright').
+   * - 'auto': Read HTML as served; render only empty JavaScript shells and framesets.
    * @default ScrapeMode.Auto
    */
   scrapeMode?: ScrapeMode;

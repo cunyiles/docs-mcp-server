@@ -1,5 +1,6 @@
 import type { ScraperService } from "../scraper";
 import {
+  type CollectionStats,
   PageOutcome,
   type ScrapeResult,
   type ScraperProgressEvent as ScraperProgress,
@@ -69,7 +70,7 @@ export class PipelineWorker {
       }
 
       // --- Core Job Logic ---
-      await this.scraperService.scrape(
+      const stats: CollectionStats | undefined = await this.scraperService.scrape(
         scraperOptions,
         async (progress: ScraperProgressEvent) => {
           // Check for cancellation signal before processing each document
@@ -121,6 +122,10 @@ export class PipelineWorker {
       // Check signal one last time after scrape finishes
       if (signal.aborted) {
         throw new CancellationError("Job cancelled");
+      }
+
+      if (stats && job.versionId !== undefined) {
+        await this.store.setCollectionStats(job.versionId, stats);
       }
 
       // If successful and not cancelled, the manager will handle status update

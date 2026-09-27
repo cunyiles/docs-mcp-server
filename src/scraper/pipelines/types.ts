@@ -18,6 +18,8 @@ export interface PipelineResult {
   errors?: Error[];
   /** Pre-split chunks from pipeline processing */
   chunks?: Chunk[];
+  /** True when a browser rendered the content. */
+  renderedInBrowser?: boolean;
 }
 
 /**
