@@ -31,6 +31,7 @@ import {
 } from "../pipelines/capability";
 import { PipelineFactory } from "../pipelines/PipelineFactory";
 import type { ContentPipeline, PipelineResult } from "../pipelines/types";
+import { type DetectedPlatform, detectPlatform } from "../platforms";
 import type {
   CollectionStats,
   CrawlFrontier,
@@ -40,6 +41,7 @@ import type {
 } from "../types";
 import { convertToString } from "../utils/buffer";
 import { isLlmsTxtUrl, type LlmsTxtResult, parseLlmsTxt } from "../utils/llmsTxtParser";
+import { needsBrowserRendering } from "../utils/renderSignals";
 import { isFileLikePath, isPathDescendant } from "../utils/scope";
 import { parseSitemap, sitemapsFromRobots } from "../utils/sitemap";
 import { BaseScraperStrategy, type ProcessItemResult } from "./BaseScraperStrategy";
@@ -108,6 +110,10 @@ export class WebScraperStrategy extends BaseScraperStrategy {
   private readonly linkWitness = new Set<string>();
   /** The fetch ladder per host, learned during this crawl. */
   private readonly hosts = new Map<string, HostMemory>();
+  /** Source text a documentation generator publishes, by page identity. */
+  private readonly platformSources = new Map<string, string>();
+  /** In-scope pages each detected generator index lists, by witness name. */
+  private platformLists: Array<readonly [string, string[]]> = [];
 
   constructor(config: AppConfig, options: WebScraperStrategyOptions = {}) {
     super(config, { urlNormalizerOptions: options.urlNormalizerOptions });
@@ -196,7 +202,8 @@ export class WebScraperStrategy extends BaseScraperStrategy {
 
   /**
    * Fetches the Markdown twin an HTML page declares with
-   * `<link rel="alternate" type="text/markdown">`, when it has one.
+   * `<link rel="alternate" type="text/markdown">`, or links to as its own
+   * `.md` twin (JavaScript shells offer one in `<noscript>`), when it has one.
    *
    * @returns The Markdown response, or undefined when the page declares none or
    *   the twin cannot be read as Markdown.
@@ -207,11 +214,24 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     options: ScraperOptions,
     signal?: AbortSignal,
   ): Promise<RawContent | undefined> {
-    const $ = cheerio.load(convertToString(rawContent.content, rawContent.charset));
-    const href = $('link[rel~="alternate"]')
+    const text = convertToString(rawContent.content, rawContent.charset);
+    const $ = cheerio.load(text);
+    const declared = $('link[rel~="alternate"]')
       .filter((_, el) => /^text\/(x-)?markdown\b/i.test($(el).attr("type") ?? ""))
       .first()
       .attr("href");
+    const twins = TWIN_PATTERNS.map((pattern) => this.twinUrl(pageUrl, pattern));
+    // Read from the raw text: anchors inside <noscript> are not parsed as markup.
+    const linked = [...text.matchAll(/href=["']([^"']+\.md)["']/gi)]
+      .map((match) => {
+        try {
+          return new URL(match[1], pageUrl).href;
+        } catch {
+          return "";
+        }
+      })
+      .find((url) => twins.includes(url));
+    const href = declared ?? linked;
     if (!href) return undefined;
     let alternateUrl: string;
     try {
@@ -472,6 +492,52 @@ export class WebScraperStrategy extends BaseScraperStrategy {
   }
 
   /**
+   * Recognises the documentation generator behind an entry point from the HTML
+   * the crawl fetched for it, remembers where the generator publishes page
+   * sources, and queues the pages its index lists.
+   *
+   * ponytail: a refresh whose entry page answers 304 re-reads no index; the
+   * stored pages are still revisited, and new ones arrive through links.
+   */
+  private async detectPlatformAt(
+    item: QueueItem,
+    rawContent: RawContent,
+    options: ScraperOptions,
+    signal?: AbortSignal,
+  ): Promise<QueueItem[]> {
+    const isEntry =
+      item.depth === 0 &&
+      !item.fromLlmsTxt &&
+      [options.url, ...(options.entryPoints ?? [])].some(
+        (entry) =>
+          this.pageIdentity(entry, options) === this.pageIdentity(item.url, options),
+      );
+    if (
+      !isEntry ||
+      rawContent.status !== FetchStatus.SUCCESS ||
+      !MimeTypeUtils.isHtml(rawContent.mimeType)
+    ) {
+      return [];
+    }
+    const found: DetectedPlatform | null = await detectPlatform(
+      rawContent.source,
+      convertToString(rawContent.content, rawContent.charset),
+      async (url) => {
+        const raw = await this.fetchWitness(url, options, signal);
+        return raw ? convertToString(raw.content, raw.charset) : undefined;
+      },
+    );
+    if (!found) return [];
+    for (const [page, source] of found.sources ?? []) {
+      this.platformSources.set(this.pageIdentity(page, options), source);
+    }
+    const pages = found.pages.filter((url) => this.shouldProcessUrl(url, options));
+    logger.info(`🧭 ${item.url}: ${found.witness} lists ${pages.length} pages in scope`);
+    this.platformLists.push([found.witness, pages]);
+    return pages.map((url) => ({ url, depth: 1, fromWitness: true }));
+  }
+
+  /**
    * Reads every sitemap the entry points' hosts publish (robots.txt
    * declarations, the host root, the entry point's directory), following
    * sitemap indexes, and returns the in-scope pages they list.
@@ -586,8 +652,10 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     const fetchOptions = this.createFetchOptions(item, options, signal);
 
     if (!item.fromLlmsTxt || this.isMarkdownUrl(item.url)) {
-      const twin = await this.fetchMarkdownTwin(item, options, signal);
-      return twin ?? (await this.fetcher.fetch(item.url, fetchOptions));
+      const source =
+        (await this.fetchPlatformSource(item, options, signal)) ??
+        (await this.fetchMarkdownTwin(item, options, signal));
+      return source ?? (await this.fetcher.fetch(item.url, fetchOptions));
     }
 
     const markdownVariantUrl = this.buildMarkdownVariantUrl(item.url);
@@ -614,6 +682,32 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     }
 
     return this.fetcher.fetch(item.url, fetchOptions);
+  }
+
+  /**
+   * The source text the site's documentation generator publishes for this page
+   * (Sphinx `_sources`), recorded under the page's own URL.
+   */
+  private async fetchPlatformSource(
+    item: QueueItem,
+    options: ScraperOptions,
+    signal?: AbortSignal,
+  ): Promise<RawContent | undefined> {
+    const pageUrl = item.identityUrl ?? item.url;
+    const sourceUrl = this.platformSources.get(this.pageIdentity(pageUrl, options));
+    if (!sourceUrl) return undefined;
+    try {
+      const fetched = await this.fetcher.fetch(sourceUrl, {
+        ...this.createFetchOptions(item, options, signal),
+        acceptsMimeType: undefined,
+      });
+      if (fetched.status === FetchStatus.NOT_MODIFIED) return { ...fetched, pageUrl };
+      if (fetched.status !== FetchStatus.SUCCESS) return undefined;
+      return { ...fetched, mimeType: "text/markdown", pageUrl };
+    } catch (error) {
+      if (error instanceof CancellationError) throw error;
+      return undefined;
+    }
   }
 
   /** What this crawl learned about a host's rungs. */
@@ -900,11 +994,20 @@ export class WebScraperStrategy extends BaseScraperStrategy {
       const rawContent = this.asMarkdownRepresentation(fetchedSource, fetched);
       // A Markdown variant is recorded under the page it represents, so a `.md`
       // URL and its canonical form resolve to one identity however each was found.
-      const effectiveSource = this.resolvePageIdentity(fetchedSource, rawContent);
+      // A generator's source text names the page it was written for, and so
+      // does a refresh asking the location a page's content came from.
+      const effectiveSource =
+        fetched.pageUrl ??
+        (item.identityUrl && fetchedSource === item.url
+          ? item.identityUrl
+          : this.resolvePageIdentity(fetchedSource, rawContent));
       if (this.isRequestedRoot(item, options)) {
         this.updateCanonicalBaseUrl(effectiveSource, options);
       }
-      const llmsTxtQueueItems = this.consumePendingLlmsTxtQueueItems(item, options);
+      const llmsTxtQueueItems = [
+        ...this.consumePendingLlmsTxtQueueItems(item, options),
+        ...(await this.detectPlatformAt(item, fetched, options, signal)),
+      ];
 
       logger.debug(
         `Fetch result for ${url}: status=${rawContent.status}, etag=${rawContent.etag || "none"}`,
@@ -962,8 +1065,31 @@ export class WebScraperStrategy extends BaseScraperStrategy {
         );
       }
 
+      // A JavaScript shell that offers its Markdown twin is read from the twin,
+      // so no browser starts for it.
+      let shellTwin: { raw: RawContent; processed: PipelineResult } | undefined;
+      if (
+        MimeTypeUtils.isHtml(rawContent.mimeType) &&
+        needsBrowserRendering(convertToString(rawContent.content, rawContent.charset))
+      ) {
+        const twin = await this.fetchMarkdownAlternate(
+          rawContent,
+          effectiveSource,
+          options,
+          signal,
+        );
+        const fromTwin = twin
+          ? await this.runPipelines(twin, effectiveSource, options)
+          : undefined;
+        if (twin && fromTwin?.textContent?.trim()) {
+          shellTwin = { raw: twin, processed: fromTwin };
+        }
+      }
+
       // --- Start Pipeline Processing ---
-      let processed = await this.runPipelines(rawContent, effectiveSource, options);
+      let processed =
+        shellTwin?.processed ??
+        (await this.runPipelines(rawContent, effectiveSource, options));
 
       if (!processed) {
         // If content type is unsupported (e.g. binary/archive encountered during crawl), we just skip
@@ -989,9 +1115,9 @@ export class WebScraperStrategy extends BaseScraperStrategy {
       // A page that declares a Markdown alternate is recorded from it: the
       // site's own Markdown is cleaner than HTML we convert, and the page's
       // URL stays its identity. Links still come from both.
-      let representation = rawContent;
-      let representationUrl = fetchedSource;
-      if (MimeTypeUtils.isHtml(rawContent.mimeType)) {
+      let representation = shellTwin?.raw ?? rawContent;
+      let representationUrl = shellTwin?.raw.source ?? fetchedSource;
+      if (MimeTypeUtils.isHtml(rawContent.mimeType) && !shellTwin) {
         const alternate = await this.fetchMarkdownAlternate(
           rawContent,
           effectiveSource,
@@ -1169,10 +1295,12 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     this.witnessSeeds = (sitemap ?? []).map((url) => ({
       url,
       depth: 1,
-      fromSitemap: true,
+      fromWitness: true,
     }));
+    this.platformLists = [];
 
     const stats = await super.scrape(options, progressCallback, signal, frontier);
+    const platformLists = this.platformLists;
 
     // Coverage: how many pages each witness lists, and which were absent.
     const witnesses: Record<string, number> = { links: this.linkWitness.size };
@@ -1181,12 +1309,13 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     for (const [name, urls] of [
       ["sitemap", sitemap],
       ["llms.txt", llmsTxt],
+      ...platformLists,
     ] as const) {
       if (urls === null) {
         absent.push(name);
         continue;
       }
-      witnesses[name] = urls.length;
+      witnesses[name] = (witnesses[name] ?? 0) + urls.length;
       for (const url of urls) listed.add(this.pageIdentity(url, options));
     }
     return {

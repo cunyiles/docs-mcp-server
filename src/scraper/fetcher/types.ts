@@ -78,6 +78,8 @@ export interface RawContent {
   renderedInBrowser?: boolean;
   /** True when fetched with browser fingerprint impersonation. */
   impersonated?: boolean;
+  /** The page this content represents, when it was read from the page's source elsewhere. */
+  pageUrl?: string;
 }
 
 /**

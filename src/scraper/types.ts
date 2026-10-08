@@ -15,8 +15,8 @@ export type QueueItem = {
   storedMimeType?: string | null;
   /** True when the queue item was seeded from a discovered llms.txt file. */
   fromLlmsTxt?: boolean;
-  /** True when the queue item was listed by a sitemap. */
-  fromSitemap?: boolean;
+  /** True when the queue item was listed by a witness (sitemap, generator index). */
+  fromWitness?: boolean;
   /**
    * The page's own URL, when `url` is the location a representation of it was
    * retrieved from rather than the page itself.

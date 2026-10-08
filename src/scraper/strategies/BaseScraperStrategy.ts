@@ -274,7 +274,7 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
     // for. Its dead entries must not push the scrape past the failure threshold
     // — that would abort the scrape by the back door, which is exactly what
     // treating those 404s as non-fatal is meant to prevent.
-    if (item.fromLlmsTxt || item.fromSitemap) {
+    if (item.fromLlmsTxt || item.fromWitness) {
       return false;
     }
     return !this.isRequestedRoot(item, options) && !this.isRefreshDeletion(item, result);
