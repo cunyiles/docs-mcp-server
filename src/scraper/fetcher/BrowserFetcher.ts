@@ -414,6 +414,9 @@ export class BrowserFetcher implements ContentFetcher {
   public static async launchBrowser(): Promise<Browser> {
     return chromium.launch({
       headless: true,
+      // The full Chromium build in headless mode: installs made with
+      // `playwright install --no-shell` have no separate headless shell.
+      channel: "chromium",
       executablePath: BrowserFetcher.resolveChromiumExecutablePath(),
       args: [
         "--no-sandbox",
