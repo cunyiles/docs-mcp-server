@@ -471,7 +471,15 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
                 // change. `etag` is dropped because it was issued by the
                 // resource that just answered 404, and `identityUrl` because
                 // this IS the identity — a second 404 here is the page.
-                [{ ...item, url: item.identityUrl, etag: null, identityUrl: undefined }]
+                [
+                  {
+                    ...item,
+                    url: item.identityUrl,
+                    etag: null,
+                    lastModified: null,
+                    identityUrl: undefined,
+                  },
+                ]
               : [];
           // Deliberately not named `isRefreshDeletion`: the method of that
           // name answers "is this a refresh 404?" and is still consulted by

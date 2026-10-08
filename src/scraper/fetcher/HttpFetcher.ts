@@ -133,10 +133,16 @@ export class HttpFetcher implements ContentFetcher {
 
           // Add If-None-Match header for conditional requests if ETag is provided
           if (options?.etag) {
-            headers["If-None-Match"] = options.etag;
+            headers["If-None-Match"] = ifNoneMatch(options.etag);
             logger.debug(
-              `Conditional request for ${source} with If-None-Match: ${options.etag}`,
+              `Conditional request for ${source} with If-None-Match: ${headers["If-None-Match"]}`,
             );
+          }
+          if (options?.lastModified) {
+            const since = new Date(options.lastModified);
+            if (!Number.isNaN(since.getTime())) {
+              headers["If-Modified-Since"] = since.toUTCString();
+            }
           }
 
           const config: AxiosRequestConfig = {
@@ -390,6 +396,20 @@ export class HttpFetcher implements ContentFetcher {
       true,
     );
   }
+}
+
+/**
+ * The If-None-Match value for a stored ETag.
+ *
+ * Servers that compress on the fly append the encoding to the ETag they send
+ * (`"abc-gzip"`, `"abc-df"`) but compare the condition against the plain one,
+ * so both forms are sent and either can match.
+ *
+ * @param etag The ETag as the server sent it.
+ */
+export function ifNoneMatch(etag: string): string {
+  const plain = etag.replace(/-(gzip|df|deflate|br|zstd)"$/i, '"');
+  return plain === etag ? etag : `${etag}, ${plain}`;
 }
 
 /**

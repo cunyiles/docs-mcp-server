@@ -471,6 +471,8 @@ export class PipelineManager implements IPipeline {
           depth: page.depth ?? 0, // Use original depth, fallback to 0 for old data
           pageId: page.id,
           etag: incomplete ? undefined : page.etag,
+          lastModified: incomplete ? undefined : page.last_modified,
+          storedMimeType: page.source_content_type,
           // Carried so a withdrawn representation does not read as a withdrawn
           // page: the scraper asks this address before deleting anything.
           identityUrl: page.content_url ? page.url : undefined,

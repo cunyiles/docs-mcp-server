@@ -9,6 +9,10 @@ export type QueueItem = {
   depth: number;
   pageId?: number; // Database page ID for efficient deletion during refresh
   etag?: string | null; // Last known ETag for conditional requests during refresh
+  /** Last known Last-Modified (ISO 8601), for If-Modified-Since during refresh. */
+  lastModified?: string | null;
+  /** MIME type the stored page was read from, during refresh. */
+  storedMimeType?: string | null;
   /** True when the queue item was seeded from a discovered llms.txt file. */
   fromLlmsTxt?: boolean;
   /**

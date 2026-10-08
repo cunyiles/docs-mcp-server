@@ -563,6 +563,8 @@ export class DocumentManagementService {
       id: number;
       url: string;
       etag: string | null;
+      last_modified: string | null;
+      source_content_type: string | null;
       depth: number | null;
       content_url: string | null;
     }>

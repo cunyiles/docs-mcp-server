@@ -2206,7 +2206,38 @@ export class DocumentStore {
 
         this.retirePreviousPage(previousPageId, current);
 
-        if (current) {
+        // A refresh that finds the same Markdown keeps the chunks and vectors
+        // it has; only the validators below are updated. A changed page keeps
+        // the vectors of chunks whose embedded text did not change.
+        const previous = current
+          ? (this.db
+              .prepare("SELECT title, markdown FROM pages WHERE id = ?")
+              .get(current.id) as
+              | { title: string | null; markdown: string | null }
+              | undefined)
+          : undefined;
+        const unchanged =
+          previous?.markdown != null &&
+          previous.markdown === (result.textContent ?? null) &&
+          (previous.title ?? "") === (title || "");
+        const reusableVectors = new Map<string, string>();
+        if (current && !unchanged && (previous?.title ?? "") === (title || "")) {
+          const rows = this.db
+            .prepare(
+              "SELECT content, metadata, embedding FROM documents WHERE page_id = ? AND embedding IS NOT NULL",
+            )
+            .all(current.id) as Array<{
+            content: string;
+            metadata: string;
+            embedding: string;
+          }>;
+          for (const row of rows) {
+            const path = (JSON.parse(row.metadata || "{}") as DbChunkMetadata).path ?? [];
+            reusableVectors.set(JSON.stringify([path, row.content]), row.embedding);
+          }
+        }
+
+        if (current && !unchanged) {
           const deleted = this.statements.deleteDocumentsByPageId.run(current.id);
           if (deleted.changes > 0) {
             logger.debug(`Deleted ${deleted.changes} existing documents for URL: ${url}`);
@@ -2247,10 +2278,15 @@ export class DocumentStore {
           throw new StoreError(`Failed to get page ID for URL: ${url}`);
         }
         const pageId = insertedPage.id;
+        if (unchanged) {
+          logger.debug(`Content unchanged, keeping chunks of ${url}`);
+          return false;
+        }
 
+        let pending = false;
         for (let i = 0; i < chunks.length; i++) {
           const chunk = chunks[i];
-          this.statements.insertDocument.run(
+          const inserted = this.statements.insertDocument.run(
             pageId,
             chunk.content,
             JSON.stringify({
@@ -2260,8 +2296,16 @@ export class DocumentStore {
             } satisfies DbChunkMetadata),
             i, // sort_order within this page
           );
+          const vector = reusableVectors.get(
+            JSON.stringify([chunk.section.path, chunk.content]),
+          );
+          if (vector) {
+            this.statements.insertEmbedding.run(vector, BigInt(inserted.lastInsertRowid));
+          } else {
+            pending = true;
+          }
         }
-        return true;
+        return pending;
       });
 
       if (transaction()) this.onBacklogGrew?.();

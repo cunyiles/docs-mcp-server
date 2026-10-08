@@ -136,6 +136,7 @@ export class WebScraperStrategy extends BaseScraperStrategy {
       followRedirects: options.followRedirects,
       headers: options.headers,
       etag: item.etag,
+      lastModified: item.lastModified,
       // Fetch-time gate. The fetcher stays ignorant of pipelines; it is simply
       // told what this strategy is able to read.
       acceptsMimeType: this.canProcessMimeType,
@@ -303,11 +304,11 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     options: ScraperOptions,
     signal?: AbortSignal,
   ): Promise<string[]> {
-    const { etag: _markdownEtag, ...fetchOptions } = this.createFetchOptions(
-      item,
-      options,
-      signal,
-    );
+    const {
+      etag: _markdownEtag,
+      lastModified: _markdownLastModified,
+      ...fetchOptions
+    } = this.createFetchOptions(item, options, signal);
 
     try {
       const htmlContent = await this.fetcher.fetch(effectiveSource, {
@@ -731,10 +732,13 @@ export class WebScraperStrategy extends BaseScraperStrategy {
       // Use the final URL from rawContent.source (which may differ due to redirects)
       if (rawContent.status !== FetchStatus.SUCCESS) {
         logger.debug(`Skipping pipeline for ${url} due to status: ${rawContent.status}`);
+        // An unchanged HTML page has unchanged navigation; only a page stored
+        // from another representation needs its HTML navigation read again.
         const navigationLinks =
           rawContent.status === FetchStatus.NOT_MODIFIED &&
           this.isRequestedRoot(item, options) &&
-          shouldDiscoverHtmlNavigation
+          shouldDiscoverHtmlNavigation &&
+          !MimeTypeUtils.isHtml(item.storedMimeType ?? "")
             ? await this.discoverHtmlNavigationLinks(
                 item,
                 effectiveSource,
