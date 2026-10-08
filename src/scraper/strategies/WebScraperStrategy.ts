@@ -3,6 +3,7 @@
  * fetcher selection, and routes content through pipelines. Requires resolved
  * configuration from the entrypoint to avoid implicit config loading.
  */
+import { randomUUID } from "node:crypto";
 import fsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -52,6 +53,25 @@ export interface WebScraperStrategyOptions {
 /** Sitemap files read per collection; large sites split theirs into hundreds. */
 const MAX_SITEMAP_FILES = 500;
 
+/** URL patterns of published Markdown twins, in the order they are tried. */
+const TWIN_PATTERNS = ["md", "html.md"] as const;
+type TwinPattern = (typeof TWIN_PATTERNS)[number];
+
+/** Pages in a row a rung may add nothing before a host stops getting it. */
+const RUNG_TRIALS = 2;
+
+/** What a crawl has learned about one host's fetch ladder. */
+interface HostMemory {
+  /** The twin pattern the host uses, "none" when it soft-404s, "unknown" until seen. */
+  twin: TwinPattern | "none" | "unknown";
+  /** Resolves true when the host answers any `.md` URL, real or not. */
+  softNotFound?: Promise<boolean>;
+  /** Pages in a row whose HTML navigation found nothing the links had not. */
+  navMisses: number;
+  /** Set once HTML navigation stops being read for this host. */
+  navExhausted?: boolean;
+}
+
 /**
  * Matches paths naming an archive we know how to unpack.
  *
@@ -86,6 +106,8 @@ export class WebScraperStrategy extends BaseScraperStrategy {
   private pendingLlmsTxtProbe: LlmsTxtProbeResult | null = null;
   /** In-scope pages the link crawl found, as page identities. */
   private readonly linkWitness = new Set<string>();
+  /** The fetch ladder per host, learned during this crawl. */
+  private readonly hosts = new Map<string, HostMemory>();
 
   constructor(config: AppConfig, options: WebScraperStrategyOptions = {}) {
     super(config, { urlNormalizerOptions: options.urlNormalizerOptions });
@@ -206,6 +228,7 @@ export class WebScraperStrategy extends BaseScraperStrategy {
       });
       if (fetched.status !== FetchStatus.SUCCESS) return undefined;
       if (!this.isAcceptableMarkdownVariant(fetched)) return undefined;
+      this.learnTwinPattern(pageUrl, alternateUrl);
       return MimeTypeUtils.isMarkdown(fetched.mimeType)
         ? fetched
         : { ...fetched, mimeType: "text/markdown" };
@@ -563,7 +586,8 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     const fetchOptions = this.createFetchOptions(item, options, signal);
 
     if (!item.fromLlmsTxt || this.isMarkdownUrl(item.url)) {
-      return await this.fetcher.fetch(item.url, fetchOptions);
+      const twin = await this.fetchMarkdownTwin(item, options, signal);
+      return twin ?? (await this.fetcher.fetch(item.url, fetchOptions));
     }
 
     const markdownVariantUrl = this.buildMarkdownVariantUrl(item.url);
@@ -576,6 +600,7 @@ export class WebScraperStrategy extends BaseScraperStrategy {
         logger.debug(
           `llms.txt Markdown URL preference succeeded: ${item.url} -> ${markdownVariantUrl}`,
         );
+        this.learnTwinPattern(item.url, markdownVariantUrl);
         return markdownContent;
       }
 
@@ -589,6 +614,94 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     }
 
     return this.fetcher.fetch(item.url, fetchOptions);
+  }
+
+  /** What this crawl learned about a host's rungs. */
+  private hostMemory(url: string): HostMemory {
+    const host = new URL(url).host;
+    let memory = this.hosts.get(host);
+    if (!memory) {
+      memory = { twin: "unknown", navMisses: 0 };
+      this.hosts.set(host, memory);
+    }
+    return memory;
+  }
+
+  /**
+   * Remembers which twin URL pattern a host publishes, from a twin the host
+   * itself pointed to.
+   */
+  private learnTwinPattern(pageUrl: string, twinUrl: string): void {
+    const memory = this.hostMemory(pageUrl);
+    if (memory.twin !== "unknown") return;
+    const pattern = TWIN_PATTERNS.find((p) => this.twinUrl(pageUrl, p) === twinUrl);
+    if (pattern) {
+      logger.debug(`${new URL(pageUrl).host} publishes Markdown twins (${pattern})`);
+      memory.twin = pattern;
+    }
+  }
+
+  /**
+   * The first rung of the fetch ladder: the page's published Markdown twin.
+   *
+   * Asked only on hosts that showed they publish twins (a declared Markdown
+   * alternate or an llms.txt twin), with the URL pattern they used, so later
+   * pages skip the HTML. A host that answers any `.md` URL with a page (a
+   * soft 404) is not trusted with twins.
+   *
+   * @returns The twin's response, or undefined to fetch the page itself.
+   */
+  private async fetchMarkdownTwin(
+    item: QueueItem,
+    options: ScraperOptions,
+    signal?: AbortSignal,
+  ): Promise<RawContent | undefined> {
+    const url = new URL(item.url);
+    if (
+      this.isMarkdownUrl(item.url) ||
+      url.search !== "" ||
+      getHeader(options.headers, "accept") !== undefined
+    ) {
+      return undefined;
+    }
+    const memory = this.hostMemory(item.url);
+    if (memory.twin === "none" || memory.twin === "unknown") return undefined;
+
+    const probe = async (target: string) => {
+      try {
+        const fetched = await this.fetcher.fetch(target, {
+          signal,
+          headers: options.headers,
+          followRedirects: false,
+        });
+        return fetched.status === FetchStatus.SUCCESS &&
+          this.isAcceptableMarkdownVariant(fetched)
+          ? fetched
+          : undefined;
+      } catch (error) {
+        if (error instanceof CancellationError) throw error;
+        return undefined;
+      }
+    };
+
+    // A host that answers a URL that cannot exist has no trustworthy twins.
+    memory.softNotFound ??= probe(`${url.origin}/${randomUUID()}.md`).then(Boolean);
+    if (await memory.softNotFound) {
+      memory.twin = "none";
+      return undefined;
+    }
+
+    const twin = await probe(this.twinUrl(item.url, memory.twin));
+    return twin ? { ...twin, mimeType: "text/markdown" } : undefined;
+  }
+
+  private twinUrl(pageUrl: string, pattern: TwinPattern): string {
+    if (pattern === "html.md") return this.buildMarkdownVariantUrl(pageUrl);
+    const twin = new URL(pageUrl);
+    twin.pathname = twin.pathname.endsWith("/")
+      ? `${twin.pathname}index.md`
+      : `${twin.pathname}.md`;
+    return twin.href;
   }
 
   private getLlmsTxtCandidates(baseUrl: string, inputUrl: string): string[] {
@@ -898,10 +1011,38 @@ export class WebScraperStrategy extends BaseScraperStrategy {
         }
       }
 
-      const navigationLinks =
-        MimeTypeUtils.isMarkdown(rawContent.mimeType) && shouldDiscoverHtmlNavigation
-          ? await this.discoverHtmlNavigationLinks(item, effectiveSource, options, signal)
-          : [];
+      // HTML navigation beside Markdown is read until it stops finding pages:
+      // a site's sidebar is the same on every page, so after the first pages it
+      // only costs a request per page.
+      const memory = this.hostMemory(effectiveSource);
+      const discoverNavigation =
+        MimeTypeUtils.isMarkdown(rawContent.mimeType) &&
+        shouldDiscoverHtmlNavigation &&
+        !memory.navExhausted;
+      const navigationLinks = discoverNavigation
+        ? await this.discoverHtmlNavigationLinks(item, effectiveSource, options, signal)
+        : [];
+      if (discoverNavigation) {
+        const known = new Set(
+          this.filterDiscoveredLinks(processed.links ?? [], effectiveSource, options),
+        );
+        const found = this.filterDiscoveredLinks(
+          navigationLinks,
+          effectiveSource,
+          options,
+        ).some(
+          (link) =>
+            !known.has(link) &&
+            !this.visited.has(normalizeUrl(link, this.getUrlNormalizerOptions(options))),
+        );
+        memory.navMisses = found ? 0 : memory.navMisses + 1;
+        if (memory.navMisses >= RUNG_TRIALS) {
+          logger.debug(
+            `HTML navigation on ${new URL(effectiveSource).host} adds nothing`,
+          );
+          memory.navExhausted = true;
+        }
+      }
       const mergedLinks = [...new Set([...(processed.links ?? []), ...navigationLinks])];
       const filteredLinks = this.filterDiscoveredLinks(
         mergedLinks,
