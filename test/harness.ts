@@ -171,6 +171,8 @@ export interface Grounded {
   waitForJobs(): Promise<void>;
   /** The MCP server's initialize instructions. */
   instructions(): string | undefined;
+  /** The tools the server offers, as a harness lists them. */
+  listTools(): ReturnType<Client["listTools"]>;
   stop(): Promise<void>;
   /** Stops and starts again on the same store, as a container restart would. */
   restart(configure?: (config: AppConfig) => void): Promise<Grounded>;
@@ -259,6 +261,7 @@ export async function startGrounded(
     },
     waitForJobs,
     instructions: () => client.getInstructions(),
+    listTools: () => client.listTools(),
     stop,
     restart: async (reconfigure) => {
       await stop();

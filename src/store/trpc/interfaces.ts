@@ -4,6 +4,7 @@
  */
 import type { ScraperOptions } from "../../scraper/types";
 import type { EmbeddingModelConfig } from "../embeddings/EmbeddingConfig";
+import type { GrepResult } from "../grep";
 import type {
   ActivityHistory,
   CompactResult,
@@ -38,6 +39,17 @@ export interface IDocumentManagement {
     query: string,
     limit?: number,
   ): Promise<StoreSearchResult[]>;
+  grepStore(
+    library: string,
+    version: string | null | undefined,
+    pattern: string,
+    limit?: number,
+  ): Promise<GrepResult>;
+  readPage(
+    library: string,
+    version: string | null | undefined,
+    url: string,
+  ): Promise<string | null>;
   removeAllDocuments(library: string, version?: string | null): Promise<void>;
   removeVersion(library: string, version?: string | null): Promise<void>;
   /**

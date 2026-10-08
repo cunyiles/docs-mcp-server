@@ -1532,6 +1532,48 @@ export class DocumentStore {
   }
 
   /**
+   * Yields a version's pages with their whole Markdown, one row at a time.
+   *
+   * Pages stored before Markdown was kept fall back to their chunks in order.
+   *
+   * @param library Library name.
+   * @param version Version label.
+   * @param options.url Only this page.
+   * @param options.containing Only pages whose Markdown contains this text.
+   */
+  *iteratePageMarkdown(
+    library: string,
+    version: string,
+    options: { url?: string; containing?: string } = {},
+  ): Generator<{ url: string; markdown: string }> {
+    const versionRow = this.statements.getVersionId.get(
+      normalizeLibraryName(library),
+      normalizeVersionLabel(version),
+    ) as { id: number } | undefined;
+    if (!versionRow) return;
+    const filters = [
+      options.url !== undefined ? "url = @url" : "",
+      options.containing !== undefined ? "instr(markdown, @containing) > 0" : "",
+    ].filter(Boolean);
+    const rows = this.db
+      .prepare(
+        `SELECT url, markdown FROM (
+           SELECT p.url, COALESCE(p.markdown, (
+             SELECT group_concat(content, char(10) || char(10))
+             FROM (SELECT content FROM documents WHERE page_id = p.id ORDER BY sort_order)
+           )) AS markdown
+           FROM pages p WHERE p.version_id = @versionId
+         ) WHERE markdown IS NOT NULL ${filters.map((f) => `AND ${f}`).join(" ")}
+         ORDER BY url`,
+      )
+      .iterate({ versionId: versionRow.id, ...options }) as IterableIterator<{
+      url: string;
+      markdown: string;
+    }>;
+    yield* rows;
+  }
+
+  /**
    * Removes query-string variants that serve the same content as their bare URL.
    *
    * `/x?rec=A` and `/x` are one page when their Markdown is the same; a variant

@@ -263,7 +263,8 @@ export function createMcpServerInstance(
   // Search docs tool
   server.tool(
     "search_docs",
-    "Search up-to-date documentation for a library or package. Examples:\n\n" +
+    "Answer a question from a library's documentation: returns the passages that best match a natural-language query. " +
+      "For an exact name (a class, function or error message) use grep_docs; to read a whole page use read_page. Examples:\n\n" +
       '- {library: "react", query: "hooks lifecycle"} -> matches latest version of React\n' +
       '- {library: "react", version: "18.0.0", query: "hooks lifecycle"} -> matches React 18.0.0 or earlier\n' +
       '- {library: "typescript", version: "5.x", query: "ReturnType example"} -> any TypeScript 5.x.x version\n' +
@@ -318,6 +319,93 @@ ${r.content}\n`,
           );
         }
         return createResponse(`${formattedResults.join("")}${note}`);
+      } catch (error) {
+        return createError(error);
+      }
+    },
+  );
+
+  server.tool(
+    "grep_docs",
+    "Find an exact name or pattern in a library's documentation: returns each page URL and line that contains it. " +
+      "Use for identifiers like `Modifier.padding` or an error class; wrap a regular expression in slashes, e.g. /use[A-Z]\\w+/. " +
+      "For a question use search_docs.",
+    {
+      library: z.string().trim().describe("Library name."),
+      version: z
+        .string()
+        .trim()
+        .optional()
+        .describe("Library version (exact or X-Range, optional)."),
+      pattern: z
+        .string()
+        .min(1)
+        .describe("Exact text to find, or a regular expression as /pattern/flags."),
+      limit: z
+        .number()
+        .int()
+        .optional()
+        .default(30)
+        .describe("Maximum number of matches."),
+    },
+    {
+      title: "Grep Library Documentation",
+      readOnlyHint: true,
+      destructiveHint: false,
+    },
+    async ({ library, version, pattern, limit }) => {
+      telemetry.track(TelemetryEvent.TOOL_USED, {
+        tool: "grep_docs",
+        context: "mcp_server",
+        library,
+        version,
+      });
+      try {
+        const result = await tools.grep.execute({ library, version, pattern, limit });
+        if (result.total === 0) {
+          return createResponse(`No line in ${library} contains ${pattern}.`);
+        }
+        const lines = result.matches.map((m) => `${m.url}:${m.line}: ${m.text}`);
+        const more =
+          result.total > result.matches.length
+            ? `\n\n${result.total - result.matches.length} more matches not shown; narrow the pattern or raise limit.`
+            : "";
+        return createResponse(`${lines.join("\n")}${more}`);
+      } catch (error) {
+        return createError(error);
+      }
+    },
+  );
+
+  server.tool(
+    "read_page",
+    "Read a whole page of a library's documentation as Markdown, beyond the passage search_docs or grep_docs returned. Pass a URL those tools returned.",
+    {
+      library: z.string().trim().describe("Library name."),
+      version: z
+        .string()
+        .trim()
+        .optional()
+        .describe("Library version (exact or X-Range, optional)."),
+      url: z
+        .string()
+        .trim()
+        .describe("Page URL as returned by search_docs or grep_docs."),
+    },
+    {
+      title: "Read Documentation Page",
+      readOnlyHint: true,
+      destructiveHint: false,
+    },
+    async ({ library, version, url }) => {
+      telemetry.track(TelemetryEvent.TOOL_USED, {
+        tool: "read_page",
+        context: "mcp_server",
+        library,
+        version,
+      });
+      try {
+        return createResponse(await tools.readPage.execute({ library, version, url }));
       } catch (error) {
         return createError(error);
       }

@@ -7,6 +7,7 @@ import superjson from "superjson";
 import type { ScraperOptions } from "../scraper/types";
 import { logger } from "../utils/logger";
 import type { EmbeddingModelConfig } from "./embeddings/EmbeddingConfig";
+import type { GrepResult } from "./grep";
 import type { IDocumentManagement } from "./trpc/interfaces";
 import type { DataRouter } from "./trpc/router";
 import type {
@@ -83,6 +84,23 @@ export class DocumentManagementClient implements IDocumentManagement {
     limit?: number,
   ): Promise<StoreSearchResult[]> {
     return this.client.search.query({ library, version: version ?? null, query, limit });
+  }
+
+  async grepStore(
+    library: string,
+    version: string | null | undefined,
+    pattern: string,
+    limit?: number,
+  ): Promise<GrepResult> {
+    return this.client.grep.query({ library, version: version ?? null, pattern, limit });
+  }
+
+  async readPage(
+    library: string,
+    version: string | null | undefined,
+    url: string,
+  ): Promise<string | null> {
+    return this.client.readPage.query({ library, version: version ?? null, url });
   }
 
   async removeVersion(library: string, version?: string | null): Promise<void> {

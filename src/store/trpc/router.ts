@@ -103,6 +103,48 @@ export function createDataRouter(trpc: unknown) {
         },
       ),
 
+    grep: tt.procedure
+      .input(
+        z.object({
+          library: nonEmpty,
+          version: optionalVersion,
+          pattern: z.string().min(1),
+          limit: z.number().int().positive().max(200).optional(),
+        }),
+      )
+      .query(
+        async ({
+          ctx,
+          input,
+        }: {
+          ctx: DataTrpcContext;
+          input: {
+            library: string;
+            version: string | null | undefined;
+            pattern: string;
+            limit?: number;
+          };
+        }) =>
+          ctx.docService.grepStore(
+            input.library,
+            input.version ?? null,
+            input.pattern,
+            input.limit,
+          ),
+      ),
+
+    readPage: tt.procedure
+      .input(z.object({ library: nonEmpty, version: optionalVersion, url: nonEmpty }))
+      .query(
+        async ({
+          ctx,
+          input,
+        }: {
+          ctx: DataTrpcContext;
+          input: { library: string; version: string | null | undefined; url: string };
+        }) => ctx.docService.readPage(input.library, input.version ?? null, input.url),
+      ),
+
     removeVersion: tt.procedure
       .input(z.object({ library: nonEmpty, version: optionalVersion }))
       .mutation(

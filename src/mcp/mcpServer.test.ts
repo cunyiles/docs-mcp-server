@@ -30,6 +30,12 @@ const mockTools: McpServerTools = {
   search: {
     execute: vi.fn(async () => ({ results: [] })),
   } as any,
+  grep: {
+    execute: vi.fn(async () => ({ matches: [], total: 0, version: null })),
+  } as any,
+  readPage: {
+    execute: vi.fn(async () => "# Page"),
+  } as any,
   fetchUrl: {
     execute: vi.fn(async () => "# Mock content"),
   } as any,

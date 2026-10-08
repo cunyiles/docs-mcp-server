@@ -28,6 +28,7 @@ import {
   StoreError,
   VersionNotFoundInStoreError,
 } from "./errors";
+import { type GrepResult, grepPages, parseGrepPattern } from "./grep";
 import type {
   ActivityHistory,
   CollectionStats,
@@ -765,6 +766,44 @@ export class DocumentManagementService {
   ): Promise<StoreSearchResult[]> {
     const normalizedVersion = normalizeVersionLabel(version);
     return this.documentRetriever.search(library, normalizedVersion, query, limit);
+  }
+
+  /**
+   * Finds the lines of a version's pages that contain a literal text or match
+   * a `/regex/flags` pattern.
+   *
+   * @throws GrepPatternError When the pattern is invalid or too slow.
+   */
+  async grepStore(
+    library: string,
+    version: string | null | undefined,
+    pattern: string,
+    limit = 30,
+  ): Promise<GrepResult> {
+    const parsed = parseGrepPattern(pattern);
+    const pages = this.store.iteratePageMarkdown(
+      library,
+      normalizeVersionLabel(version),
+      typeof parsed === "string" ? { containing: parsed } : {},
+    );
+    // Consumed synchronously: the connection is busy while the rows are read.
+    return grepPages(pages, parsed, limit);
+  }
+
+  /** One page's whole Markdown, or null when the version has no such page. */
+  async readPage(
+    library: string,
+    version: string | null | undefined,
+    url: string,
+  ): Promise<string | null> {
+    for (const page of this.store.iteratePageMarkdown(
+      library,
+      normalizeVersionLabel(version),
+      { url },
+    )) {
+      return page.markdown;
+    }
+    return null;
   }
 
   // Deprecated simple listing removed: enriched listLibraries() is canonical
