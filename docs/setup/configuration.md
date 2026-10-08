@@ -199,6 +199,9 @@ Settings controlling the web scraping behavior.
 | `fetcher.maxRetries` | `6` | Number of retries for failed requests. |
 | `fetcher.baseDelayMs` | `1000` | Initial delay for exponential backoff (ms). |
 | `fetcher.userAgent` | `docs-mcp-server (+https://github.com/arabold/docs-mcp-server)` | The crawler's identity on every request (`DOCS_MCP_SCRAPER_FETCHER_USER_AGENT`). Name your deployment and a contact here. Requests are plain HTTP with gzip; browser fingerprint headers are not sent. |
+| `fetcher.archiveBase` | `https://web.archive.org/web/2id_/` | Web archive prefix tried for a host that answers 403 or a bot challenge; the page URL is appended (`DOCS_MCP_SCRAPER_FETCHER_ARCHIVE_BASE`). Empty disables it. |
+| `fetcher.readerProxy` | (empty) | Reader proxy prefix tried for a refusing host after the archive; the page URL is appended and the answer read as Markdown (`DOCS_MCP_SCRAPER_FETCHER_READER_PROXY`). Empty skips it. |
+| `fetcher.impersonate` | `true` | Try browser TLS fingerprint impersonation for a refusing host before Chromium (`DOCS_MCP_SCRAPER_FETCHER_IMPERSONATE`). Never used for hosts that answer plain requests. |
 | `document.maxSize` | `10485760` | Maximum size (bytes) for PDF/Office documents. |
 
 _Note: Scraper settings are often overridden per-job via CLI arguments like `--max-pages`._

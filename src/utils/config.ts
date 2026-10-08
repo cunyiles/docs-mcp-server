@@ -125,6 +125,18 @@ export const DEFAULT_CONFIG = {
        * login page instead of serving their documentation.
        */
       userAgent: "docs-mcp-server (+https://github.com/arabold/docs-mcp-server)",
+      /**
+       * Web archive prefix tried for a host that refuses us; the page URL is
+       * appended. Empty disables the archive rung.
+       */
+      archiveBase: "https://web.archive.org/web/2id_/",
+      /**
+       * Reader proxy prefix (the page URL is appended) tried for a host that
+       * refuses us. Empty, the default, skips this rung.
+       */
+      readerProxy: "",
+      /** Try browser TLS fingerprint impersonation on hosts that refuse plain requests. */
+      impersonate: true,
     },
     document: {
       maxSize: 10 * 1024 * 1024, // 10MB max size for PDF/Office documents
@@ -281,6 +293,15 @@ export const AppConfigSchema = z.object({
             .trim()
             .min(1)
             .default(DEFAULT_CONFIG.scraper.fetcher.userAgent),
+          archiveBase: z
+            .string()
+            .trim()
+            .default(DEFAULT_CONFIG.scraper.fetcher.archiveBase),
+          readerProxy: z
+            .string()
+            .trim()
+            .default(DEFAULT_CONFIG.scraper.fetcher.readerProxy),
+          impersonate: envBoolean.default(DEFAULT_CONFIG.scraper.fetcher.impersonate),
         })
         .default(DEFAULT_CONFIG.scraper.fetcher),
       document: z

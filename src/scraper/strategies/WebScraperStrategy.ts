@@ -1077,6 +1077,7 @@ export class WebScraperStrategy extends BaseScraperStrategy {
           // gets different handling downstream.
           pipelineFailed,
           renderedInBrowser: rawContent.renderedInBrowser || processed.renderedInBrowser,
+          impersonated: rawContent.impersonated,
           status: FetchStatus.SUCCESS,
         };
       }
@@ -1096,6 +1097,7 @@ export class WebScraperStrategy extends BaseScraperStrategy {
         links: filteredLinks,
         queueItems: llmsTxtQueueItems,
         renderedInBrowser: rawContent.renderedInBrowser || processed.renderedInBrowser,
+        impersonated: rawContent.impersonated,
         status: FetchStatus.SUCCESS,
       };
     } catch (error) {
@@ -1105,7 +1107,40 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     }
   }
 
+  /**
+   * Collects, and reports what the refusing-host ladder did, also when the run
+   * fails: a run that failed because every way in was refused should still
+   * name the host and the reason.
+   */
   async scrape(
+    options: ScraperOptions,
+    progressCallback: ProgressCallback<ScraperProgressEvent>,
+    signal?: AbortSignal,
+    frontier?: CrawlFrontier,
+  ): Promise<CollectionStats> {
+    const ladder = (): CollectionStats => {
+      const report = this.fetcher.ladderReport();
+      return {
+        ...(Object.keys(report.hostRungs).length > 0
+          ? { hostRungs: report.hostRungs }
+          : {}),
+        ...(report.refusedHosts.length > 0 ? { refusedHosts: report.refusedHosts } : {}),
+      };
+    };
+    try {
+      return {
+        ...(await this.collect(options, progressCallback, signal, frontier)),
+        ...ladder(),
+      };
+    } catch (error) {
+      if (error instanceof Error) {
+        Object.assign(error, { collectionStats: ladder() });
+      }
+      throw error;
+    }
+  }
+
+  private async collect(
     options: ScraperOptions,
     progressCallback: ProgressCallback<ScraperProgressEvent>,
     signal?: AbortSignal,

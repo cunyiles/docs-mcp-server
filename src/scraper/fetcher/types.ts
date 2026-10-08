@@ -76,6 +76,8 @@ export interface RawContent {
   status: FetchStatus;
   /** Set when a browser fetched the content. */
   renderedInBrowser?: boolean;
+  /** True when fetched with browser fingerprint impersonation. */
+  impersonated?: boolean;
 }
 
 /**

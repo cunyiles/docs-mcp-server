@@ -9,6 +9,7 @@ import {
 import { AutoDetectFetcher } from "./AutoDetectFetcher";
 import { BrowserFetcher } from "./BrowserFetcher";
 import { HttpFetcher } from "./HttpFetcher";
+import { ImpersonatingFetcher } from "./ImpersonatingFetcher";
 import { FetchStatus } from "./types";
 
 describe("AutoDetectFetcher", () => {
@@ -55,26 +56,39 @@ describe("AutoDetectFetcher", () => {
     expect(browserSpy).toHaveBeenCalledWith(source, undefined);
   });
 
-  it.each([403, 429])(
-    "should fall back to browser fetcher on a %i response",
-    async (statusCode) => {
-      vi.spyOn(HttpFetcher.prototype, "fetch").mockRejectedValue(
-        new HttpStatusError(
-          `Failed to fetch ${source} after 1 attempts: Request failed with status code ${statusCode}`,
-          true,
-          statusCode,
-        ),
-      );
-      const browserSpy = vi
-        .spyOn(BrowserFetcher.prototype, "fetch")
-        .mockResolvedValue(browserResult);
+  it("falls back to the browser on a 403 once every other way in failed", async () => {
+    vi.spyOn(HttpFetcher.prototype, "fetch").mockRejectedValue(
+      new HttpStatusError(
+        `Failed to fetch ${source} after 1 attempts: Request failed with status code 403`,
+        true,
+        403,
+      ),
+    );
+    const impersonated = vi
+      .spyOn(ImpersonatingFetcher.prototype, "fetch")
+      .mockRejectedValue(new Error("refused too"));
+    const browserSpy = vi
+      .spyOn(BrowserFetcher.prototype, "fetch")
+      .mockResolvedValue(browserResult);
 
-      const fetcher = new AutoDetectFetcher(scraperConfig);
+    const fetcher = new AutoDetectFetcher(scraperConfig);
 
-      expect(await fetcher.fetch(source)).toBe(browserResult);
-      expect(browserSpy).toHaveBeenCalledWith(source, undefined);
-    },
-  );
+    expect(await fetcher.fetch(source)).toBe(browserResult);
+    expect(impersonated).toHaveBeenCalledOnce();
+    expect(browserSpy).toHaveBeenCalledWith(source, undefined);
+    expect(fetcher.ladderReport().hostRungs).toEqual({ "example.com": "browser" });
+  });
+
+  it("leaves a 429 to the retry policy instead of disguising the crawler", async () => {
+    const error = new HttpStatusError("Too many requests", true, 429);
+    vi.spyOn(HttpFetcher.prototype, "fetch").mockRejectedValue(error);
+    const browserSpy = vi.spyOn(BrowserFetcher.prototype, "fetch");
+
+    const fetcher = new AutoDetectFetcher(scraperConfig);
+
+    await expect(fetcher.fetch(source)).rejects.toBe(error);
+    expect(browserSpy).not.toHaveBeenCalled();
+  });
 
   it("should not fall back when a non-anti-bot failure mentions 403 in the url", async () => {
     // The error message embeds the source url, so a substring check would

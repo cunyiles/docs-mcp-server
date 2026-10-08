@@ -162,6 +162,11 @@ export class PipelineWorker {
     } catch (error) {
       // Re-throw error to be caught by the manager in _runJob
       logger.warn(`⚠️  [${jobId}] Worker encountered error: ${error}`);
+      // A failed run still tells which hosts refused it and why.
+      const partial = (error as { collectionStats?: CollectionStats }).collectionStats;
+      if (partial && Object.keys(partial).length > 0 && job.versionId !== undefined) {
+        await this.store.mergeCollectionStats(job.versionId, partial).catch(() => {});
+      }
       throw persistenceError ?? error;
     }
     // Note: The manager (_runJob) is responsible for updating final job status (COMPLETED/FAILED/CANCELLED)

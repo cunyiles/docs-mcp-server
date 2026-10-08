@@ -204,6 +204,11 @@ export class DocumentManagementService {
     return this.store.setCollectionStats(versionId, stats);
   }
 
+  /** Overlays some figures on what the last run observed, keeping the rest. */
+  async mergeCollectionStats(versionId: number, stats: CollectionStats): Promise<void> {
+    return this.store.mergeCollectionStats(versionId, stats);
+  }
+
   /**
    * Stores scraper options for a version to enable reproducible indexing.
    */

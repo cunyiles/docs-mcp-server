@@ -187,6 +187,9 @@ function testConfig(storeDir: string): AppConfig {
   config.scraper.security.network.allowPrivateNetworks = true;
   config.scraper.fetcher.maxRetries = 0;
   config.scraper.fetcher.baseDelayMs = 10;
+  // Ways into refusing hosts reach real services; scenarios opt in with fakes.
+  config.scraper.fetcher.archiveBase = "";
+  config.scraper.fetcher.impersonate = false;
   config.embeddings.retryBaseDelayMs = 50;
   return config;
 }

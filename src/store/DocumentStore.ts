@@ -1712,6 +1712,15 @@ export class DocumentStore {
       .run(JSON.stringify(stats), versionId);
   }
 
+  /** Overlays some figures on what the last run observed, keeping the rest. */
+  async mergeCollectionStats(versionId: number, stats: CollectionStats): Promise<void> {
+    this.db
+      .prepare(
+        "UPDATE versions SET collection_stats = json_patch(COALESCE(collection_stats, '{}'), ?) WHERE id = ?",
+      )
+      .run(JSON.stringify(stats), versionId);
+  }
+
   /**
    * Retrieves versions by their status.
    * @param statuses Array of statuses to filter by

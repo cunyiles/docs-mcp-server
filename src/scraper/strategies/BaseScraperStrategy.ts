@@ -74,6 +74,8 @@ export interface ProcessItemResult {
   pipelineFailed?: boolean;
   /** True when a browser rendered or fetched this item. */
   renderedInBrowser?: boolean;
+  /** True when this item was fetched with browser fingerprint impersonation. */
+  impersonated?: boolean;
   /** Any non-critical errors encountered during processing. This may be an empty array if no errors were encountered or if the content was not processed. */
   status: FetchStatus;
 }
@@ -445,6 +447,9 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
         throwIfBatchAborted();
         if (result.renderedInBrowser) {
           this.stats.browserPages = (this.stats.browserPages ?? 0) + 1;
+        }
+        if (result.impersonated) {
+          this.stats.impersonatedPages = (this.stats.impersonatedPages ?? 0) + 1;
         }
 
         if (result.status === FetchStatus.NOT_MODIFIED) {
