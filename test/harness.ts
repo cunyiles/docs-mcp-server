@@ -18,6 +18,7 @@ import { createMcpServerInstance } from "../src/mcp/mcpServer";
 import { initializeTools } from "../src/mcp/tools";
 import { PipelineManager } from "../src/pipeline/PipelineManager";
 import { PipelineJobStatus } from "../src/pipeline/types";
+import { clearSitemapCache } from "../src/scraper/strategies/WebScraperStrategy";
 import { DocumentManagementService } from "../src/store/DocumentManagementService";
 import { type AppConfig, loadConfig } from "../src/utils/config";
 import { server } from "./mock-server";
@@ -205,6 +206,7 @@ export async function startGrounded(
 ): Promise<Grounded> {
   const config = testConfig(storeDir);
   configure?.(config);
+  clearSitemapCache();
   const eventBus = new EventBusService();
   const docService = new DocumentManagementService(eventBus, config);
   await docService.initialize();

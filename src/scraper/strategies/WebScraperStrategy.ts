@@ -43,7 +43,7 @@ import { convertToString } from "../utils/buffer";
 import { isLlmsTxtUrl, type LlmsTxtResult, parseLlmsTxt } from "../utils/llmsTxtParser";
 import { needsBrowserRendering } from "../utils/renderSignals";
 import { isFileLikePath, isPathDescendant } from "../utils/scope";
-import { parseSitemap, sitemapsFromRobots } from "../utils/sitemap";
+import { type ParsedSitemap, parseSitemap, sitemapsFromRobots } from "../utils/sitemap";
 import { BaseScraperStrategy, type ProcessItemResult } from "./BaseScraperStrategy";
 import { LocalFileStrategy } from "./LocalFileStrategy";
 
@@ -54,6 +54,22 @@ export interface WebScraperStrategyOptions {
 
 /** Sitemap files read per collection; large sites split theirs into hundreds. */
 const MAX_SITEMAP_FILES = 500;
+
+/**
+ * Sitemaps read recently, shared by every crawl in the process: several
+ * libraries often live on one host, and a refresh revisits them in a row.
+ * ponytail: unbounded map, entries replaced after the TTL; an LRU if hosts multiply.
+ */
+const SITEMAP_CACHE = new Map<
+  string,
+  { at: number; parsed: ParsedSitemap | undefined }
+>();
+const SITEMAP_CACHE_MS = 6 * 60 * 60 * 1000;
+
+/** Forgets every cached sitemap; for a process that starts over, such as a test. */
+export function clearSitemapCache(): void {
+  SITEMAP_CACHE.clear();
+}
 
 /** URL patterns of published Markdown twins, in the order they are tried. */
 const TWIN_PATTERNS = ["md", "html.md"] as const;
@@ -569,21 +585,46 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     const seen = new Set<string>();
     const listed = new Set<string>();
     let found = false;
-    while (candidates.length > 0 && seen.size < MAX_SITEMAP_FILES) {
-      const sitemapUrl = candidates.shift() as string;
-      if (seen.has(sitemapUrl)) continue;
-      seen.add(sitemapUrl);
-      const raw = await this.fetchWitness(sitemapUrl, options, signal);
-      if (!raw) continue;
-      const parsed = parseSitemap(raw.content);
-      if (parsed.sitemaps.length === 0 && parsed.urls.length === 0) continue;
-      found = true;
-      candidates.push(...parsed.sitemaps);
-      for (const url of parsed.urls) {
-        if (this.shouldProcessUrl(url, options)) listed.add(url);
+    // Read a level of the sitemap tree at a time, its files in parallel: large
+    // sites serve each child slowly, and a crawl should not wait for them in turn.
+    let level = candidates;
+    while (level.length > 0 && seen.size < MAX_SITEMAP_FILES) {
+      const batch = [...new Set(level)]
+        .filter((url) => !seen.has(url))
+        .slice(0, MAX_SITEMAP_FILES - seen.size);
+      for (const url of batch) seen.add(url);
+      const parsedLevel = await Promise.all(
+        batch.map((url) => this.readSitemap(url, options, signal)),
+      );
+      level = [];
+      for (const parsed of parsedLevel) {
+        if (!parsed || (parsed.sitemaps.length === 0 && parsed.urls.length === 0))
+          continue;
+        found = true;
+        level.push(...parsed.sitemaps);
+        for (const url of parsed.urls) {
+          if (this.shouldProcessUrl(url, options)) listed.add(url);
+        }
       }
     }
     return found ? [...listed] : null;
+  }
+
+  /**
+   * Reads one sitemap file, from a short-lived process-wide cache when another
+   * crawl of the same host read it recently.
+   */
+  private async readSitemap(
+    url: string,
+    options: ScraperOptions,
+    signal?: AbortSignal,
+  ): Promise<ParsedSitemap | undefined> {
+    const cached = SITEMAP_CACHE.get(url);
+    if (cached && Date.now() - cached.at < SITEMAP_CACHE_MS) return cached.parsed;
+    const raw = await this.fetchWitness(url, options, signal);
+    const parsed = raw ? parseSitemap(raw.content) : undefined;
+    SITEMAP_CACHE.set(url, { at: Date.now(), parsed });
+    return parsed;
   }
 
   /**
