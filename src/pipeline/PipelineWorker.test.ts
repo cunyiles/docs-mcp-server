@@ -28,6 +28,8 @@ describe("PipelineWorker", () => {
       deletePage: vi.fn().mockResolvedValue(undefined),
       collapseQueryVariants: vi.fn().mockResolvedValue(0),
       setCollectionStats: vi.fn().mockResolvedValue(undefined),
+      clearCrawlFrontier: vi.fn(),
+      crawlFrontier: vi.fn(),
     };
 
     mockScraperService = {
@@ -144,6 +146,7 @@ describe("PipelineWorker", () => {
       mockJob.scraperOptions, // Now passes the complete options directly
       expect.any(Function), // The progress callback
       abortController.signal,
+      undefined, // No crawl frontier without a version row
     );
 
     // Verify addScrapeResult was called for each document

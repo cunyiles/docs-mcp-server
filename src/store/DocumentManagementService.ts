@@ -5,7 +5,7 @@ import type { EventBusService } from "../events";
 import { EventType } from "../events";
 import { PipelineFactory } from "../scraper/pipelines/PipelineFactory";
 import type { ContentPipeline } from "../scraper/pipelines/types";
-import type { ScrapeResult, ScraperOptions } from "../scraper/types";
+import type { CrawlFrontier, ScrapeResult, ScraperOptions } from "../scraper/types";
 import type { Chunk } from "../splitter/types";
 import { telemetry } from "../telemetry";
 import type { AppConfig } from "../utils/config";
@@ -265,7 +265,8 @@ export class DocumentManagementService {
             indexedAt: v.indexedAt,
             sourceUrl: v.sourceUrl ?? undefined,
             preserveHashes: scraperOptions?.options.preserveHashes,
-            entryPoints: v.sourceUrl ? [v.sourceUrl] : [],
+            entryPoints:
+              scraperOptions?.options.entryPoints ?? (v.sourceUrl ? [v.sourceUrl] : []),
             pagesCollected: v.pagesCollected,
             pagesEmbedded: embeddingsActive ? v.pagesEmbedded : null,
             lastCollection: run(
@@ -766,6 +767,21 @@ export class DocumentManagementService {
   ): Promise<StoreSearchResult[]> {
     const normalizedVersion = normalizeVersionLabel(version);
     return this.documentRetriever.search(library, normalizedVersion, query, limit);
+  }
+
+  /** The persisted crawl queue of a version's run. */
+  crawlFrontier(versionId: number): CrawlFrontier {
+    return this.store.crawlFrontier(versionId);
+  }
+
+  /** Forgets a version's crawl queue, before a new run or after a finished one. */
+  clearCrawlFrontier(versionId: number): void {
+    this.store.clearCrawlFrontier(versionId);
+  }
+
+  /** True when a version's interrupted run left pages to collect. */
+  hasPendingCrawl(versionId: number): boolean {
+    return this.store.hasPendingCrawl(versionId);
   }
 
   /**

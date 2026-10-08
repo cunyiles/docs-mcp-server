@@ -2067,3 +2067,42 @@ describe("BaseScraperStrategy empty-page reporting", () => {
     expect(event?.emptyPage).toBeUndefined();
   });
 });
+
+describe("BaseScraperStrategy adaptive concurrency", () => {
+  it("halves the batch after failures and grows it back one item per clean batch", async () => {
+    const config = createTestConfig({ abortOnFailureRate: 1 });
+    config.scraper.maxConcurrency = 4;
+    const strategy = new TestScraperStrategy(config);
+    const links = Array.from({ length: 12 }, (_, i) => `https://example.com/p${i}`);
+    let inFlight = 0;
+    const batchSizes: number[] = [];
+    strategy.processItem.mockImplementation(async (item: QueueItem) => {
+      if (inFlight === 0) batchSizes.push(0);
+      inFlight++;
+      batchSizes[batchSizes.length - 1]++;
+      await new Promise((resolve) => setImmediate(resolve));
+      inFlight--;
+      if (/p[0-3]$/.test(item.url)) throw new Error("throttled");
+      return {
+        url: item.url,
+        content: { textContent: "ok", links: [], errors: [], chunks: [] },
+        links: item.depth === 0 ? links : [],
+        status: FetchStatus.SUCCESS,
+      };
+    });
+
+    await strategy.scrape(
+      {
+        url: "https://example.com/",
+        library: "t",
+        version: "",
+        ignoreErrors: true,
+        maxPages: 0,
+      },
+      vi.fn(),
+    );
+
+    // root, 4 failures, then 2, 3, 4 and the remaining 2
+    expect(batchSizes).toEqual([1, 4, 2, 3, 3]);
+  });
+});

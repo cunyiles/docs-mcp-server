@@ -66,6 +66,19 @@ const patternsSchema = z.union([z.string(), z.array(z.string())]).transform((val
   return value.map((p) => p.trim()).filter(Boolean);
 });
 
+/** How a harness should use this server, sent on initialize. */
+export const SERVER_INSTRUCTIONS = `This server holds current documentation of public libraries.
+
+Reading: search_docs answers a question, grep_docs finds an exact name or regex and returns page and line, read_page returns a whole page. Call list_libraries to see which libraries and versions exist, how complete each is and whether its last collection or refresh failed.
+
+Adding a library (scrape_docs takes url, library and, only when a project pins one, version; pass no other option):
+- Name the library by the product's common name: lowercase, words joined by hyphens, no "-docs" suffix (e.g. "jetpack-compose", "httpx").
+- Start from the root of the documentation, not from one page of it.
+- Add the API reference and any other section that lives elsewhere by calling scrape_docs again with the same library and that section's URL; each call adds an entry point to the library.
+- Any URL can be an entry point: a mirror of the documentation or an OpenAPI file when the vendor's site refuses crawlers.
+- Add an older version only when a project needs it; otherwise the library tracks the current documentation.
+- If list_libraries flags a library as suspiciously small or names a host that refused collection, add a better entry point.`;
+
 /**
  * Creates and configures an instance of the MCP server with registered tools and resources.
  * @param tools The shared tool instances to use for server operations.
@@ -87,6 +100,7 @@ export function createMcpServerInstance(
         tools: {},
         resources: {},
       },
+      instructions: SERVER_INSTRUCTIONS,
     },
   );
 
@@ -97,7 +111,7 @@ export function createMcpServerInstance(
     // Scrape docs tool - suppress deep inference issues
     server.tool(
       "scrape_docs",
-      "Scrape and index documentation from a URL for a library. Use this tool to index a new library or a new version.",
+      "Collect a library's documentation from an entry point URL so it becomes searchable. Calling it again for the same library and version with another URL (e.g. the API reference) adds that URL as a further entry point; the same URL collects the library again. Pass only url, library and, when a project pins one, version.",
       {
         url: z.string().url().describe("Documentation root URL to scrape."),
         library: z.string().trim().describe("Library name."),

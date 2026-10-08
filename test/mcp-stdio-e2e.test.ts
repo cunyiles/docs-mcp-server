@@ -99,6 +99,7 @@ describe("MCP stdio server E2E", () => {
     expect(toolNames).toContain("list_libraries");
     expect(toolNames).toContain("grep_docs");
     expect(toolNames).toContain("read_page");
+    expect(client.getInstructions()).toMatch(/entry point/);
   }, 30000);
 
   it("should handle shutdown gracefully", async () => {

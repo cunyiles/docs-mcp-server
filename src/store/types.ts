@@ -120,6 +120,8 @@ export enum VersionStatus {
  * Excludes runtime-only fields like signal, library, version, and url.
  */
 export interface VersionScraperOptions {
+  /** Every entry point of the library; absent for versions collected from one URL. */
+  entryPoints?: string[];
   // Core scraping parameters
   maxPages?: number;
   maxDepth?: number;

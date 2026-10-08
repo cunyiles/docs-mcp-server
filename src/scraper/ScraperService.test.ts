@@ -44,6 +44,7 @@ describe("ScraperService", () => {
       options,
       progressCallback,
       undefined,
+      undefined,
     );
   });
 
@@ -66,6 +67,7 @@ describe("ScraperService", () => {
     expect(mockStrategy.scrape).toHaveBeenCalledWith(
       options,
       progressCallback,
+      undefined,
       undefined,
     );
   });
@@ -90,6 +92,7 @@ describe("ScraperService", () => {
     expect(mockStrategy.scrape).toHaveBeenCalledWith(
       options,
       progressCallback,
+      undefined,
       undefined,
     );
   });
@@ -161,6 +164,7 @@ describe("ScraperService", () => {
     expect(jsonStrategy.scrape).toHaveBeenCalledWith(
       options,
       progressCallback,
+      undefined,
       undefined,
     );
     expect(jsonStrategy.cleanup).toHaveBeenCalledOnce();

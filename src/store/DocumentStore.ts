@@ -2,7 +2,12 @@ import { statSync } from "node:fs";
 import type { Embeddings } from "@langchain/core/embeddings";
 import Database, { type Database as DatabaseType } from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
-import type { ScrapeResult, ScraperOptions } from "../scraper/types";
+import type {
+  CrawlFrontier,
+  QueueItem,
+  ScrapeResult,
+  ScraperOptions,
+} from "../scraper/types";
 import { type AppConfig, isVectorDimensionExplicit } from "../utils/config";
 import { logger } from "../utils/logger";
 import { MimeTypeUtils } from "../utils/mimeTypeUtils";
@@ -1532,6 +1537,73 @@ export class DocumentStore {
   }
 
   /**
+   * The persisted crawl queue of a version's run.
+   *
+   * Writes are synchronous and transactional, so an item is marked processed
+   * only together with the links it produced.
+   */
+  crawlFrontier(versionId: number): CrawlFrontier {
+    const BASE_KEY = "#base";
+    const insert = this.db.prepare(
+      "INSERT OR IGNORE INTO crawl_frontier (version_id, key, item) VALUES (?, ?, ?)",
+    );
+    const markDone = this.db.prepare(
+      "UPDATE crawl_frontier SET done = 1 WHERE version_id = ? AND key = ?",
+    );
+    const commit = this.db.transaction(
+      (admitted: Array<{ key: string; item: QueueItem }>, done: string[]) => {
+        for (const { key, item } of admitted) {
+          insert.run(versionId, key, JSON.stringify(item));
+        }
+        for (const key of done) markDone.run(versionId, key);
+      },
+    );
+    return {
+      resume: () => {
+        const rows = this.db
+          .prepare(
+            "SELECT key, item, done FROM crawl_frontier WHERE version_id = ? ORDER BY id",
+          )
+          .all(versionId) as Array<{ key: string; item: string; done: number }>;
+        const items = rows.filter((row) => row.key !== BASE_KEY);
+        if (!items.some((row) => row.done === 0)) return null;
+        const base = rows.find((row) => row.key === BASE_KEY);
+        return {
+          pending: items
+            .filter((row) => row.done === 0)
+            .map((row) => JSON.parse(row.item) as QueueItem),
+          admitted: items.map((row) => row.key),
+          base: base ? (JSON.parse(base.item) as QueueItem).url : undefined,
+        };
+      },
+      commit: (admitted, done) => commit(admitted, done),
+      setBase: (url) => {
+        this.db
+          .prepare(
+            "INSERT INTO crawl_frontier (version_id, key, item, done) VALUES (?, ?, ?, 1) ON CONFLICT(version_id, key) DO UPDATE SET item = excluded.item",
+          )
+          .run(versionId, BASE_KEY, JSON.stringify({ url, depth: 0 }));
+      },
+    };
+  }
+
+  /** Forgets a version's crawl frontier. */
+  clearCrawlFrontier(versionId: number): void {
+    this.db.prepare("DELETE FROM crawl_frontier WHERE version_id = ?").run(versionId);
+  }
+
+  /** True when a version's last run left items to resume. */
+  hasPendingCrawl(versionId: number): boolean {
+    return (
+      this.db
+        .prepare(
+          "SELECT 1 FROM crawl_frontier WHERE version_id = ? AND done = 0 AND key != '#base' LIMIT 1",
+        )
+        .get(versionId) !== undefined
+    );
+  }
+
+  /**
    * Yields a version's pages with their whole Markdown, one row at a time.
    *
    * Pages stored before Markdown was kept fall back to their chunks in order.
@@ -1724,6 +1796,8 @@ export class DocumentStore {
         signal: _signal,
         initialQueue: _initialQueue,
         isRefresh: _isRefresh,
+        resume: _resume,
+        knownUrls: _knownUrls,
         ...scraper_options
       } = options;
 

@@ -57,7 +57,19 @@ export class PipelineWorker {
     try {
       // Clear existing documents for this library/version before scraping
       // Skip this step for refresh operations or if clean is explicitly false
-      if (!scraperOptions.isRefresh && scraperOptions.clean !== false) {
+      // A resumed run continues from its persisted queue; any other run starts
+      // a new one.
+      if (job.versionId !== undefined && !scraperOptions.resume) {
+        this.store.clearCrawlFrontier(job.versionId);
+      }
+      const frontier =
+        job.versionId !== undefined ? this.store.crawlFrontier(job.versionId) : undefined;
+
+      if (
+        !scraperOptions.isRefresh &&
+        !scraperOptions.resume &&
+        scraperOptions.clean !== false
+      ) {
         await this.store.removeAllDocuments(library, version);
         logger.info(
           `💾 Cleared store for ${library}@${version || "latest"} before scraping.`,
@@ -114,6 +126,7 @@ export class PipelineWorker {
           }
         },
         signal, // Pass signal to scraper service
+        frontier,
       );
       // --- End Core Job Logic ---
 
@@ -123,6 +136,7 @@ export class PipelineWorker {
       if (signal.aborted) {
         throw new CancellationError("Job cancelled");
       }
+      if (job.versionId !== undefined) this.store.clearCrawlFrontier(job.versionId);
 
       // ponytail: variants are collapsed once the crawl ends, so the backlog may
       // embed a variant that is then removed; collapse per page if that costs.

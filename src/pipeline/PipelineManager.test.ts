@@ -147,6 +147,7 @@ describe("PipelineManager", () => {
       // Refresh job methods
       listLibraries: vi.fn().mockResolvedValue([existingLibrary("test-lib", "1.0.0")]),
       getPagesByVersionId: vi.fn().mockResolvedValue([]),
+      hasPendingCrawl: vi.fn().mockReturnValue(false),
       getScraperOptions: vi.fn().mockResolvedValue(null),
       getVersionById: vi.fn().mockResolvedValue({
         id: 1,
@@ -573,6 +574,7 @@ describe("PipelineManager", () => {
           });
         }),
         getPagesByVersionId: vi.fn().mockResolvedValue([]),
+        hasPendingCrawl: vi.fn().mockReturnValue(false),
         getScraperOptions: vi.fn().mockResolvedValue({
           sourceUrl: "https://example.com",
           options: { maxDepth: 2 },
@@ -1210,6 +1212,7 @@ describe("PipelineManager", () => {
             name: "interrupted-lib",
           }),
           getPagesByVersionId: vi.fn().mockResolvedValue([]),
+          hasPendingCrawl: vi.fn().mockReturnValue(false),
           getScraperOptions: vi.fn().mockResolvedValue({
             sourceUrl: "https://example.com",
             options: { maxDepth: 2 },
@@ -1275,6 +1278,7 @@ describe("PipelineManager", () => {
             name: "no-options-lib",
           }),
           getPagesByVersionId: vi.fn().mockResolvedValue([]),
+          hasPendingCrawl: vi.fn().mockReturnValue(false),
           getScraperOptions: vi.fn().mockResolvedValue(null), // No stored options
         };
 

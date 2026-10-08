@@ -57,6 +57,23 @@ export interface CollectionStats {
 }
 
 /**
+ * A run's crawl queue, persisted so an interrupted collection resumes where it
+ * stopped instead of starting over.
+ */
+export interface CrawlFrontier {
+  /**
+   * What an interrupted run left behind: the items it had not processed, the
+   * key of every item it admitted, and the scope base it resolved. Null when
+   * there is nothing to resume.
+   */
+  resume(): { pending: QueueItem[]; admitted: string[]; base?: string } | null;
+  /** Records newly admitted items and processed items in one step. */
+  commit(admitted: Array<{ key: string; item: QueueItem }>, done: string[]): void;
+  /** Remembers the scope base resolved from the root's redirects. */
+  setBase(url: string): void;
+}
+
+/**
  * Strategy interface for implementing different scraping behaviors
  */
 export interface ScraperStrategy {
@@ -66,6 +83,7 @@ export interface ScraperStrategy {
     options: ScraperOptions,
     progressCallback: ProgressCallback<ScraperProgressEvent>,
     signal?: AbortSignal, // Add optional signal
+    frontier?: CrawlFrontier,
   ): Promise<CollectionStats | undefined>;
 
   /**
@@ -160,6 +178,15 @@ export interface ScraperOptions {
    * @default true
    */
   clean?: boolean;
+  /** Continue the run whose frontier is persisted instead of starting a new one. */
+  resume?: boolean;
+  /**
+   * Every entry point of the library, `url` included. Each is collected from,
+   * and the crawl scope is the union of their scopes.
+   */
+  entryPoints?: string[];
+  /** Runtime-only: URLs already collected, which this run does not fetch again. */
+  knownUrls?: string[];
   /**
    * Internal-only allowlist roots for application-managed temporary files.
    */

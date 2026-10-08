@@ -32,6 +32,7 @@ import { PipelineFactory } from "../pipelines/PipelineFactory";
 import type { ContentPipeline, PipelineResult } from "../pipelines/types";
 import type {
   CollectionStats,
+  CrawlFrontier,
   QueueItem,
   ScraperOptions,
   ScraperProgressEvent,
@@ -888,16 +889,20 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     options: ScraperOptions,
     progressCallback: ProgressCallback<ScraperProgressEvent>,
     signal?: AbortSignal,
+    frontier?: CrawlFrontier,
   ): Promise<CollectionStats> {
     this.pendingLlmsTxtProbe = null;
-    this.pendingLlmsTxtProbe = await this.probeLlmsTxt(
-      options.url,
-      options.url,
-      options,
-      signal,
-    );
+    // A resumed run admitted the llms.txt entries the first time round.
+    if (!options.resume) {
+      this.pendingLlmsTxtProbe = await this.probeLlmsTxt(
+        options.url,
+        options.url,
+        options,
+        signal,
+      );
+    }
 
-    return super.scrape(options, progressCallback, signal);
+    return super.scrape(options, progressCallback, signal, frontier);
   }
 
   private async processRootArchive(

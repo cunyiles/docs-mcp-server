@@ -21,6 +21,7 @@ import {
 } from "../store/types";
 import type { AppConfig } from "../utils/config";
 import { logger } from "../utils/logger";
+import { normalizeUrl } from "../utils/url";
 import { CancellationError, PipelineStateError } from "./errors";
 import { PipelineWorker } from "./PipelineWorker"; // Import the worker
 import type { IPipeline } from "./trpc/interfaces";
@@ -162,6 +163,22 @@ export class PipelineManager implements IPipeline {
       for (const version of interruptedVersions) {
         const versionLabel = `${version.library_name}@${version.name || "latest"}`;
         try {
+          const stored = this.store.hasPendingCrawl(version.id)
+            ? await this.store.getScraperOptions(version.id)
+            : null;
+          if (stored) {
+            // The interrupted run's queue is persisted: continue it, so pages
+            // already collected are not fetched again.
+            await this.enqueueScrapeJob(version.library_name, version.name, {
+              url: stored.sourceUrl,
+              library: version.library_name,
+              version: version.name ?? "",
+              ...stored.options,
+              resume: true,
+            });
+            logger.info(`⏯️  Resuming job: ${versionLabel}`);
+            continue;
+          }
           // Use enqueueRefreshJob for recovery - it handles:
           // - Completed versions: incremental refresh with ETags
           // - Incomplete versions: falls back to enqueueJobWithStoredOptions()
@@ -264,7 +281,9 @@ export class PipelineManager implements IPipeline {
       await this.cancelJob(job.id);
     }
 
-    const normalizedOptions = this.normalizeScraperOptions(options);
+    const normalizedOptions = this.normalizeScraperOptions(
+      await this.withEntryPoints(normalizedLibrary, normalizedVersion, options),
+    );
 
     const jobId = uuidv4();
     const abortController = new AbortController();
@@ -329,6 +348,42 @@ export class PipelineManager implements IPipeline {
     }
 
     return jobId;
+  }
+
+  /**
+   * Gives a requested collection the library's entry points.
+   *
+   * A URL the library does not have yet is added as an entry point: the run
+   * collects from it and keeps the pages already collected, instead of
+   * replacing the library. A known URL re-collects from every entry point.
+   * Refreshes and resumed runs carry their entry points already.
+   */
+  private async withEntryPoints(
+    library: string,
+    version: string,
+    options: ScraperOptions,
+  ): Promise<ScraperOptions> {
+    if (options.isRefresh || options.resume || options.initialQueue) return options;
+    const existing = (await this.store.listLibraries())
+      .find((entry) => entry.library === library)
+      ?.versions.find((entry) => entry.ref.version === version);
+    const known = existing?.entryPoints ?? [];
+    const same = (a: string, b: string) => normalizeUrl(a) === normalizeUrl(b);
+    if (!existing || known.length === 0)
+      return { ...options, entryPoints: [options.url] };
+    if (known.some((entry) => same(entry, options.url))) {
+      return { ...options, entryPoints: known };
+    }
+    const pages = await this.store.getPagesByVersionId(existing.id);
+    logger.info(
+      `➕ Adding entry point ${options.url} to ${library}@${version || "latest"}`,
+    );
+    return {
+      ...options,
+      entryPoints: [...known, options.url],
+      clean: false,
+      knownUrls: pages.map((page) => page.url),
+    };
   }
 
   /** Looks up an exact existing target without creating library or version rows. */
