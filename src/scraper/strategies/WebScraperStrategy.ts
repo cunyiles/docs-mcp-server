@@ -114,6 +114,8 @@ export class WebScraperStrategy extends BaseScraperStrategy {
   private readonly platformSources = new Map<string, string>();
   /** In-scope pages each detected generator index lists, by witness name. */
   private platformLists: Array<readonly [string, string[]]> = [];
+  /** HTML fetched for navigation beside a Markdown page, by queued URL. */
+  private readonly navigationPages = new Map<string, RawContent>();
 
   constructor(config: AppConfig, options: WebScraperStrategyOptions = {}) {
     super(config, { urlNormalizerOptions: options.urlNormalizerOptions });
@@ -381,6 +383,8 @@ export class WebScraperStrategy extends BaseScraperStrategy {
         );
         return [];
       }
+      // A site that negotiates Markdown shows its generator only in the HTML.
+      this.navigationPages.set(item.url, htmlContent);
 
       const context: MiddlewareContext = {
         contentType: htmlContent.mimeType,
@@ -1168,6 +1172,13 @@ export class WebScraperStrategy extends BaseScraperStrategy {
           );
           memory.navExhausted = true;
         }
+      }
+      const navigationPage = this.navigationPages.get(item.url);
+      this.navigationPages.delete(item.url);
+      if (navigationPage) {
+        llmsTxtQueueItems.push(
+          ...(await this.detectPlatformAt(item, navigationPage, options, signal)),
+        );
       }
       const mergedLinks = [...new Set([...(processed.links ?? []), ...navigationLinks])];
       const filteredLinks = this.filterDiscoveredLinks(

@@ -31,7 +31,20 @@ export const sphinx: PlatformAdapter = {
     try {
       index = JSON.parse(json);
     } catch {
-      return null;
+      // Older Sphinx writes a JavaScript object literal (unquoted keys); its
+      // string arrays are still JSON.
+      const array = (key: string) => {
+        const found = new RegExp(`["']?${key}["']?\\s*:\\s*(\\[[^\\]]*\\])`).exec(
+          json,
+        )?.[1];
+        try {
+          return found ? (JSON.parse(found) as string[]) : undefined;
+        } catch {
+          return undefined;
+        }
+      };
+      index = { docnames: array("docnames"), filenames: array("filenames") };
+      if (!index.docnames) return null;
     }
 
     const docnames = index.docnames ?? [];

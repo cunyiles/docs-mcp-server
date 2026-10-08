@@ -281,10 +281,15 @@ export class DocumentManagementService {
             ),
             lastRefresh: run(v.lastRefreshAt, v.lastRefreshStatus, v.lastRefreshError),
             collectionStats,
-            // ponytail: fixed threshold; a witness-based expectation replaces it
-            // once witnesses report how many pages a site lists.
+            // ponytail: fixed threshold, waived when the site's own lists
+            // (sitemap, generator index) confirm it is that small.
             smallCollection:
-              v.status === "completed" && v.pagesCollected < SMALL_COLLECTION_PAGES,
+              v.status === "completed" &&
+              v.pagesCollected < SMALL_COLLECTION_PAGES &&
+              !(
+                collectionStats?.listed &&
+                (collectionStats.listedCollected ?? 0) >= collectionStats.listed
+              ),
           } satisfies VersionSummary;
         }),
       );
