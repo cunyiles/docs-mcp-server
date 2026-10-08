@@ -11,6 +11,7 @@ import { DocumentPipeline } from "./DocumentPipeline";
 import { HtmlPipeline } from "./HtmlPipeline";
 import { JsonPipeline } from "./JsonPipeline";
 import { MarkdownPipeline } from "./MarkdownPipeline";
+import { OpenApiPipeline } from "./OpenApiPipeline";
 import { SourceCodePipeline } from "./SourceCodePipeline";
 import { TextPipeline } from "./TextPipeline";
 import type { ContentPipeline } from "./types";
@@ -31,6 +32,7 @@ export class PipelineFactory {
    */
   public static createStandardPipelines(appConfig: AppConfig): ContentPipeline[] {
     return [
+      new OpenApiPipeline(appConfig), // Recognised by content, so ahead of JSON and text
       new JsonPipeline(appConfig),
       new SourceCodePipeline(appConfig),
       new DocumentPipeline(appConfig), // PDF, Office docs, OpenDocument, RTF, eBooks, Jupyter notebooks

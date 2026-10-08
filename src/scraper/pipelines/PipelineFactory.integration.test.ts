@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "../../utils/config";
 import { FetchStatus, type RawContent } from "../fetcher";
 import { ScrapeMode } from "../types";
+import { OpenApiPipeline } from "./OpenApiPipeline";
 import { PipelineFactory } from "./PipelineFactory";
 
 describe("PipelineFactory Integration", () => {
@@ -25,7 +26,7 @@ describe("PipelineFactory Integration", () => {
         "This is a test sentence that is long enough to be split.\n".repeat(10); // ~570 characters with newlines
 
       // Test with TextPipeline (last pipeline, universal fallback)
-      const textPipeline = pipelines[4]; // TextPipeline
+      const textPipeline = pipelines[5]; // MarkdownPipeline
 
       // Create mock RawContent for the process method
       const rawContent: RawContent = {
@@ -63,7 +64,7 @@ describe("PipelineFactory Integration", () => {
       const moderateContent = "This is a test sentence. ".repeat(10); // ~250 characters
 
       // Test with TextPipeline
-      const textPipeline = pipelines[4];
+      const textPipeline = pipelines[5];
 
       const rawContent: RawContent = {
         source: "test.txt",
@@ -103,7 +104,8 @@ describe("PipelineFactory Integration", () => {
       // Test each pipeline
       const testContent = "This is a test content that might be split. ".repeat(10); // ~450 characters
 
-      for (const pipeline of pipelines) {
+      // The OpenAPI pipeline only reads contracts; plain text yields nothing.
+      for (const pipeline of pipelines.filter((p) => !(p instanceof OpenApiPipeline))) {
         const rawContent: RawContent = {
           source: "test.txt",
           content: testContent,

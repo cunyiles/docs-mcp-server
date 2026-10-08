@@ -4,6 +4,7 @@ import { DocumentPipeline } from "./DocumentPipeline";
 import { HtmlPipeline } from "./HtmlPipeline";
 import { JsonPipeline } from "./JsonPipeline";
 import { MarkdownPipeline } from "./MarkdownPipeline";
+import { OpenApiPipeline } from "./OpenApiPipeline";
 import { PipelineFactory } from "./PipelineFactory";
 import { SourceCodePipeline } from "./SourceCodePipeline";
 import { TextPipeline } from "./TextPipeline";
@@ -12,16 +13,17 @@ describe("PipelineFactory", () => {
   const appConfig = loadConfig();
 
   describe("createStandardPipelines", () => {
-    it("should create all six standard pipelines", () => {
+    it("should create all seven standard pipelines", () => {
       const pipelines = PipelineFactory.createStandardPipelines(appConfig);
 
-      expect(pipelines).toHaveLength(6);
-      expect(pipelines[0]).toBeInstanceOf(JsonPipeline);
-      expect(pipelines[1]).toBeInstanceOf(SourceCodePipeline);
-      expect(pipelines[2]).toBeInstanceOf(DocumentPipeline);
-      expect(pipelines[3]).toBeInstanceOf(HtmlPipeline);
-      expect(pipelines[4]).toBeInstanceOf(MarkdownPipeline);
-      expect(pipelines[5]).toBeInstanceOf(TextPipeline);
+      expect(pipelines).toHaveLength(7);
+      expect(pipelines[0]).toBeInstanceOf(OpenApiPipeline);
+      expect(pipelines[1]).toBeInstanceOf(JsonPipeline);
+      expect(pipelines[2]).toBeInstanceOf(SourceCodePipeline);
+      expect(pipelines[3]).toBeInstanceOf(DocumentPipeline);
+      expect(pipelines[4]).toBeInstanceOf(HtmlPipeline);
+      expect(pipelines[5]).toBeInstanceOf(MarkdownPipeline);
+      expect(pipelines[6]).toBeInstanceOf(TextPipeline);
     });
 
     it("should create new instances each time", () => {
@@ -40,13 +42,13 @@ describe("PipelineFactory", () => {
   describe("configuration", () => {
     it("should use default chunk sizes when no configuration provided", () => {
       const pipelines = PipelineFactory.createStandardPipelines(appConfig);
-      expect(pipelines).toHaveLength(6);
+      expect(pipelines).toHaveLength(7);
       // Test passes if no errors are thrown during pipeline creation
     });
 
     it("should use constants as defaults", () => {
       const pipelines = PipelineFactory.createStandardPipelines(appConfig);
-      expect(pipelines).toHaveLength(6);
+      expect(pipelines).toHaveLength(7);
       expect(defaults.splitter.preferredChunkSize).toBe(1500);
     });
   });
