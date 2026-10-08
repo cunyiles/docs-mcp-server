@@ -127,6 +127,8 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
   protected stats: CollectionStats = {};
   /** Where this run persists its queue, when it is resumable. */
   private frontier?: CrawlFrontier;
+  /** Pages other witnesses list (sitemaps), queued beside the entry points. */
+  protected witnessSeeds: QueueItem[] = [];
   /** Items of the current batch that failed; slows the next batch down. */
   private batchFailures = 0;
 
@@ -270,7 +272,7 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
     // for. Its dead entries must not push the scrape past the failure threshold
     // — that would abort the scrape by the back door, which is exactly what
     // treating those 404s as non-fatal is meant to prevent.
-    if (item.fromLlmsTxt) {
+    if (item.fromLlmsTxt || item.fromSitemap) {
       return false;
     }
     return !this.isRequestedRoot(item, options) && !this.isRefreshDeletion(item, result);
@@ -829,6 +831,13 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
         if (this.visited.has(key)) continue;
         this.visited.add(key);
         queue.push({ url: entry, depth: 0 });
+      }
+      // Pages another witness lists, which links alone may never reach.
+      for (const seed of this.witnessSeeds) {
+        const key = normalizeUrl(seed.url, this.getUrlNormalizerOptions(options));
+        if (this.visited.has(key)) continue;
+        this.visited.add(key);
+        queue.push(seed);
       }
     }
     if (!resumed) {

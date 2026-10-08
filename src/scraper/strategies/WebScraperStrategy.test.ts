@@ -1012,7 +1012,7 @@ describe("WebScraperStrategy", () => {
 
     // Verify page fetcher calls respect maxPages; llms.txt probe is discovery metadata.
     const pageFetches = mockFetchFn.mock.calls.filter(
-      (call) => !String(call[0]).endsWith("/llms.txt"),
+      (call) => !/\/(llms\.txt|robots\.txt|sitemap\.xml)$/.test(String(call[0])),
     );
     expect(pageFetches).toHaveLength(2);
     expect(mockFetchFn).toHaveBeenCalledWith("https://example.com", expect.anything());
@@ -2815,7 +2815,7 @@ describe("WebScraperStrategy", () => {
       // Verify root, refresh page, and discovered links were all fetched.
       // The llms.txt probe is expected metadata discovery during refresh.
       const pageFetches = mockFetchFn.mock.calls.filter(
-        (call) => !String(call[0]).endsWith("/llms.txt"),
+        (call) => !/\/(llms\.txt|robots\.txt|sitemap\.xml)$/.test(String(call[0])),
       );
       expect(pageFetches).toHaveLength(4);
       expect(mockFetchFn).toHaveBeenCalledWith("https://example.com", expect.anything());
@@ -2900,7 +2900,7 @@ describe("WebScraperStrategy", () => {
 
       // Verify all three pages plus root were fetched; llms.txt probe is metadata.
       const pageFetches = mockFetchFn.mock.calls.filter(
-        (call) => !String(call[0]).endsWith("/llms.txt"),
+        (call) => !/\/(llms\.txt|robots\.txt|sitemap\.xml)$/.test(String(call[0])),
       );
       expect(pageFetches).toHaveLength(4);
 

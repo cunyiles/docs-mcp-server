@@ -141,8 +141,20 @@ export class PipelineWorker {
       // ponytail: variants are collapsed once the crawl ends, so the backlog may
       // embed a variant that is then removed; collapse per page if that costs.
       await this.store.collapseQueryVariants(library, version);
-      if (stats && job.versionId !== undefined) {
-        await this.store.setCollectionStats(job.versionId, stats);
+      // A resumed run saw only part of the site; the first part's figures stand.
+      if (stats && job.versionId !== undefined && !scraperOptions.resume) {
+        const { listedUrls, ...observed } = stats;
+        await this.store.setCollectionStats(job.versionId, {
+          ...observed,
+          ...(listedUrls
+            ? {
+                listedCollected: this.store.countCollectedPages(
+                  job.versionId,
+                  listedUrls,
+                ),
+              }
+            : {}),
+        });
       }
 
       // If successful and not cancelled, the manager will handle status update

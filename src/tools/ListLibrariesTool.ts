@@ -54,7 +54,7 @@ export function formatVersionStatus(library: string, v: VersionInfo): string {
   const stats = v.collectionStats;
   const coverage =
     stats?.listed !== undefined
-      ? `${stats.listedCollected ?? 0}/${stats.listed} listed pages collected`
+      ? `${v.pagesCollected} pages collected, ${stats.listedCollected ?? 0} of ${stats.listed} listed`
       : `${v.pagesCollected} pages collected`;
   parts.push(
     v.pagesEmbedded === null
@@ -132,6 +132,11 @@ export function formatHealthNote(library: string, v: VersionInfo): string | unde
     issues.push(
       `not collected from ${v.collectionStats.refusedHosts.map((h) => h.host).join(", ")}`,
     );
+  }
+  const { listed, listedCollected = 0 } = v.collectionStats ?? {};
+  // ponytail: 90% tolerates dead sitemap entries; a per-URL gap list if it hides real gaps.
+  if (listed !== undefined && listedCollected < listed * 0.9) {
+    issues.push(`only ${listedCollected} of ${listed} listed pages collected`);
   }
   if (v.smallCollection) issues.push("suspiciously few pages collected");
   if (issues.length === 0) return undefined;

@@ -1592,6 +1592,17 @@ export class DocumentStore {
     this.db.prepare("DELETE FROM crawl_frontier WHERE version_id = ?").run(versionId);
   }
 
+  /** How many of the given page URLs a version has collected. */
+  countCollectedPages(versionId: number, urls: string[]): number {
+    return (
+      this.db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM pages WHERE version_id = ? AND url IN (SELECT value FROM json_each(?))",
+        )
+        .get(versionId, JSON.stringify(urls)) as { n: number }
+    ).n;
+  }
+
   /** True when a version's last run left items to resume. */
   hasPendingCrawl(versionId: number): boolean {
     return (

@@ -15,6 +15,8 @@ export type QueueItem = {
   storedMimeType?: string | null;
   /** True when the queue item was seeded from a discovered llms.txt file. */
   fromLlmsTxt?: boolean;
+  /** True when the queue item was listed by a sitemap. */
+  fromSitemap?: boolean;
   /**
    * The page's own URL, when `url` is the location a representation of it was
    * retrieved from rather than the page itself.
@@ -54,6 +56,11 @@ export interface CollectionStats {
   refusedHosts?: Array<{ host: string; reason: string }>;
   /** The way in that worked for a host that refused plain requests. */
   hostRungs?: Record<string, string>;
+  /**
+   * Runtime-only: the pages the witnesses listed, as page identities. Turned
+   * into {@link listedCollected} against the store, then dropped.
+   */
+  listedUrls?: string[];
   /** Pages rendered in a browser. */
   browserPages?: number;
   /** Pages fetched with browser fingerprint impersonation. */

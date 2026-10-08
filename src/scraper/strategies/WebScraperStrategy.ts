@@ -40,6 +40,7 @@ import type {
 import { convertToString } from "../utils/buffer";
 import { isLlmsTxtUrl, type LlmsTxtResult, parseLlmsTxt } from "../utils/llmsTxtParser";
 import { isFileLikePath, isPathDescendant } from "../utils/scope";
+import { parseSitemap, sitemapsFromRobots } from "../utils/sitemap";
 import { BaseScraperStrategy, type ProcessItemResult } from "./BaseScraperStrategy";
 import { LocalFileStrategy } from "./LocalFileStrategy";
 
@@ -47,6 +48,9 @@ export interface WebScraperStrategyOptions {
   urlNormalizerOptions?: UrlNormalizerOptions;
   shouldFollowLink?: (baseUrl: URL, targetUrl: URL) => boolean;
 }
+
+/** Sitemap files read per collection; large sites split theirs into hundreds. */
+const MAX_SITEMAP_FILES = 500;
 
 /**
  * Matches paths naming an archive we know how to unpack.
@@ -80,6 +84,8 @@ export class WebScraperStrategy extends BaseScraperStrategy {
   private tempFiles: string[] = [];
   private siblingwiseRedirectWarned = false;
   private pendingLlmsTxtProbe: LlmsTxtProbeResult | null = null;
+  /** In-scope pages the link crawl found, as page identities. */
+  private readonly linkWitness = new Set<string>();
 
   constructor(config: AppConfig, options: WebScraperStrategyOptions = {}) {
     super(config, { urlNormalizerOptions: options.urlNormalizerOptions });
@@ -387,7 +393,7 @@ export class WebScraperStrategy extends BaseScraperStrategy {
         return [link];
       }
     });
-    return [
+    const admitted = [
       ...new Set(
         withBareUrls.flatMap((link) => {
           try {
@@ -416,6 +422,75 @@ export class WebScraperStrategy extends BaseScraperStrategy {
         }),
       ),
     ];
+    for (const link of admitted) this.linkWitness.add(this.pageIdentity(link, options));
+    return admitted;
+  }
+
+  /** The identity a listed URL is stored under, for comparing witnesses. */
+  private pageIdentity(url: string, options: ScraperOptions): string {
+    const identity = this.isMarkdownUrl(url) ? stripMarkdownExtension(url) : url;
+    return this.canonicalizeStoredUrl(identity, options);
+  }
+
+  /** Fetches a witness file; undefined when it is not there. */
+  private async fetchWitness(
+    url: string,
+    options: ScraperOptions,
+    signal?: AbortSignal,
+  ): Promise<RawContent | undefined> {
+    try {
+      const raw = await this.fetcher.fetch(url, { signal, headers: options.headers });
+      return raw.status === FetchStatus.SUCCESS ? raw : undefined;
+    } catch (error) {
+      if (error instanceof CancellationError) throw error;
+      logger.debug(`Witness ${url} unavailable: ${error}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Reads every sitemap the entry points' hosts publish (robots.txt
+   * declarations, the host root, the entry point's directory), following
+   * sitemap indexes, and returns the in-scope pages they list.
+   *
+   * @returns The listed pages, or null when no host publishes a sitemap.
+   */
+  private async readSitemapWitness(
+    options: ScraperOptions,
+    signal?: AbortSignal,
+  ): Promise<string[] | null> {
+    const candidates: string[] = [];
+    for (const root of new Set([options.url, ...(options.entryPoints ?? [])])) {
+      const { origin, pathname } = new URL(root);
+      const robots = await this.fetchWitness(`${origin}/robots.txt`, options, signal);
+      if (robots) {
+        candidates.push(
+          ...sitemapsFromRobots(convertToString(robots.content, robots.charset)),
+        );
+      }
+      candidates.push(`${origin}/sitemap.xml`);
+      const directory = pathname.slice(0, pathname.lastIndexOf("/") + 1);
+      if (directory !== "/") candidates.push(`${origin}${directory}sitemap.xml`);
+    }
+
+    const seen = new Set<string>();
+    const listed = new Set<string>();
+    let found = false;
+    while (candidates.length > 0 && seen.size < MAX_SITEMAP_FILES) {
+      const sitemapUrl = candidates.shift() as string;
+      if (seen.has(sitemapUrl)) continue;
+      seen.add(sitemapUrl);
+      const raw = await this.fetchWitness(sitemapUrl, options, signal);
+      if (!raw) continue;
+      const parsed = parseSitemap(raw.content);
+      if (parsed.sitemaps.length === 0 && parsed.urls.length === 0) continue;
+      found = true;
+      candidates.push(...parsed.sitemaps);
+      for (const url of parsed.urls) {
+        if (this.shouldProcessUrl(url, options)) listed.add(url);
+      }
+    }
+    return found ? [...listed] : null;
   }
 
   /**
@@ -896,17 +971,54 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     frontier?: CrawlFrontier,
   ): Promise<CollectionStats> {
     this.pendingLlmsTxtProbe = null;
-    // A resumed run admitted the llms.txt entries the first time round.
-    if (!options.resume) {
-      this.pendingLlmsTxtProbe = await this.probeLlmsTxt(
-        options.url,
-        options.url,
-        options,
-        signal,
-      );
+    this.witnessSeeds = [];
+    this.linkWitness.clear();
+    // A resumed run admitted every witness's pages the first time round.
+    if (options.resume) {
+      return super.scrape(options, progressCallback, signal, frontier);
     }
 
-    return super.scrape(options, progressCallback, signal, frontier);
+    this.pendingLlmsTxtProbe = await this.probeLlmsTxt(
+      options.url,
+      options.url,
+      options,
+      signal,
+    );
+    const llmsTxt = this.pendingLlmsTxtProbe
+      ? this.createLlmsTxtQueueItems(options, this.pendingLlmsTxtProbe).map(
+          (item) => item.url,
+        )
+      : null;
+    const sitemap = await this.readSitemapWitness(options, signal);
+    this.witnessSeeds = (sitemap ?? []).map((url) => ({
+      url,
+      depth: 1,
+      fromSitemap: true,
+    }));
+
+    const stats = await super.scrape(options, progressCallback, signal, frontier);
+
+    // Coverage: how many pages each witness lists, and which were absent.
+    const witnesses: Record<string, number> = { links: this.linkWitness.size };
+    const absent: string[] = [];
+    const listed = new Set<string>();
+    for (const [name, urls] of [
+      ["sitemap", sitemap],
+      ["llms.txt", llmsTxt],
+    ] as const) {
+      if (urls === null) {
+        absent.push(name);
+        continue;
+      }
+      witnesses[name] = urls.length;
+      for (const url of urls) listed.add(this.pageIdentity(url, options));
+    }
+    return {
+      ...stats,
+      witnesses,
+      absentWitnesses: absent,
+      ...(listed.size > 0 ? { listed: listed.size, listedUrls: [...listed] } : {}),
+    };
   }
 
   private async processRootArchive(

@@ -781,6 +781,11 @@ export class DocumentManagementService {
     this.store.clearCrawlFrontier(versionId);
   }
 
+  /** How many of the given page URLs a version has collected. */
+  countCollectedPages(versionId: number, urls: string[]): number {
+    return this.store.countCollectedPages(versionId, urls);
+  }
+
   /** True when a version's interrupted run left pages to collect. */
   hasPendingCrawl(versionId: number): boolean {
     return this.store.hasPendingCrawl(versionId);
