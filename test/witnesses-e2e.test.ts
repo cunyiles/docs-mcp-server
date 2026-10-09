@@ -99,6 +99,30 @@ describe("Witnesses", () => {
     expect(line).toContain("no sitemap, llms.txt");
   });
 
+  it("collects what the sitemap lists under an entry point that has no page of its own", async () => {
+    fakeSite(ORIGIN, {
+      "/sitemap.xml": {
+        body: urlset(["/ref/pkg/A", "/ref/pkg/B", "/elsewhere/C"]),
+        type: "application/xml",
+      },
+      "/ref/pkg/A": html("A", "Class A handles ocelots."),
+      "/ref/pkg/B": html("B", "Class B handles lynxes."),
+    });
+    grounded = await startGrounded();
+    await grounded.scrape({ url: `${ORIGIN}/ref/`, library: "wit" });
+    const line = await statusLine();
+    expect(line).toContain("2 pages collected");
+    expect(line).toMatch(/last collection \S+ completed/);
+    expect(await found("lynxes", "/ref/pkg/B")).toBe(true);
+  });
+
+  it("still fails an entry point with no page and nothing listed under it", async () => {
+    fakeSite(ORIGIN, {});
+    grounded = await startGrounded();
+    await grounded.scrape({ url: `${ORIGIN}/ref/`, library: "wit" });
+    expect(await statusLine()).toMatch(/last collection \S+ failed/);
+  });
+
   it("closes a gap on refresh when a listed page failed before", async () => {
     let up = false;
     fakeSite(ORIGIN, {

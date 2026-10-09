@@ -296,6 +296,16 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
     );
   }
 
+  /**
+   * True when the requested root failing must fail the run: unless another
+   * witness listed pages under it, a run without its root would collect nothing.
+   * An entry point that is a directory without a page of its own (an API
+   * reference tree) is still collected from what its sitemap lists.
+   */
+  private isFatalRoot(item: QueueItem, options: ScraperOptions): boolean {
+    return this.isRequestedRoot(item, options) && this.witnessSeeds.length === 0;
+  }
+
   private isRefreshDeletion(item: QueueItem, result?: ProcessItemResult): boolean {
     return item.pageId !== undefined && result?.status === FetchStatus.NOT_FOUND;
   }
@@ -509,7 +519,7 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
           // resolved fine (see llmstxt-discovery spec: llms.txt link failures
           // are not supposed to fail the overall scrape).
           if (
-            this.isRequestedRoot(item, options) &&
+            this.isFatalRoot(item, options) &&
             !deletesStoredPage &&
             !hasNewFallbackQueueItem
           ) {
@@ -701,7 +711,7 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
 
         // Never ignore errors for the root URL (depth 0) - if it fails, the job should fail
         // There's no point in "successfully" completing with 0 documents
-        if (this.isRequestedRoot(item, options)) {
+        if (this.isFatalRoot(item, options)) {
           throw error;
         }
 
