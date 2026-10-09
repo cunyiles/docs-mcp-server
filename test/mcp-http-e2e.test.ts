@@ -263,6 +263,22 @@ describe("MCP HTTP server E2E", () => {
     expect(client.getInstructions()).toMatch(/entry point/);
   }, 30000);
 
+  it("shuts down cleanly on SIGTERM, the signal container runtimes stop with", async () => {
+    const port = await getAvailablePort();
+    await startServer(port);
+    const proc = serverProcess;
+    if (!proc) throw new Error("server did not start");
+
+    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolve) => proc.once("exit", (code, signal) => resolve({ code, signal })),
+    );
+    proc.kill("SIGTERM");
+    // Exit code 0 means the shutdown handler ran; the default action would
+    // report the signal instead (and a container's PID 1 ignores it entirely).
+    expect(await exited).toEqual({ code: 0, signal: null });
+    serverProcess = null;
+  }, 30000);
+
   it("should handle shutdown gracefully", async () => {
     const port = await getAvailablePort();
     const serverUrl = await startServer(port);

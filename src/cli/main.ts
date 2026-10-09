@@ -28,13 +28,15 @@ import {
 let isShuttingDown = false;
 
 /**
- * Graceful shutdown handler for SIGINT
+ * Graceful shutdown handler for SIGINT and SIGTERM. SIGTERM is how container
+ * runtimes and service managers stop a process, and a container's PID 1 ignores
+ * it unless handled, so without it every stop ended in a kill after the timeout.
  */
-const sigintHandler = async (): Promise<void> => {
+const sigintHandler = async (signal: NodeJS.Signals = "SIGINT"): Promise<void> => {
   if (isShuttingDown) return;
   isShuttingDown = true;
 
-  logger.debug("Received SIGINT. Shutting down gracefully...");
+  logger.debug(`Received ${signal}. Shutting down gracefully...`);
 
   try {
     const appServer = getActiveAppServer();
@@ -101,8 +103,9 @@ export async function cleanupCliCommand(): Promise<void> {
   if (!isShuttingDown) {
     logger.debug("CLI command executed. Cleaning up...");
 
-    // Remove SIGINT handler since command completed successfully
+    // Remove the signal handlers since the command completed successfully
     process.removeListener("SIGINT", sigintHandler);
+    process.removeListener("SIGTERM", sigintHandler);
 
     // Shutdown analytics for non-server CLI commands to ensure clean exit
     await telemetry.shutdown();
@@ -121,9 +124,11 @@ export async function runCli(): Promise<void> {
   // Reset shutdown state for new execution
   isShuttingDown = false;
 
-  // Ensure only one SIGINT handler is active
-  process.removeListener("SIGINT", sigintHandler);
-  process.on("SIGINT", sigintHandler);
+  // Ensure only one handler per signal is active
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.removeListener(signal, sigintHandler);
+    process.on(signal, sigintHandler);
+  }
 
   try {
     const cli = createCli(process.argv);
