@@ -138,15 +138,15 @@ export class SearchTool {
 
       // Note: versionToSearch can be string | null | undefined here.
       // searchStore handles null/undefined by normalizing to "".
-      const results = await this.docService.searchStore(
-        library,
-        versionToSearch,
-        query,
-        limit,
-      );
+      // The note does not depend on the results, so it is read while the
+      // query is embedded and ranked instead of after.
+      const [results, note] = await Promise.all([
+        this.docService.searchStore(library, versionToSearch, query, limit),
+        this.healthNote(library, versionToSearch),
+      ]);
       logger.info(`✅ Found ${results.length} matching results`);
 
-      return { results, note: await this.healthNote(library, versionToSearch) };
+      return { results, note };
     } catch (error) {
       logger.error(
         `❌ Search failed: ${error instanceof Error ? error.message : "Unknown error"}`,
