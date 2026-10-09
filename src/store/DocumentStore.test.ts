@@ -1262,6 +1262,32 @@ describe("DocumentStore - Without Embeddings (FTS-only)", () => {
       expect(emptyResults).toHaveLength(0);
     });
 
+    it("finds only the searched version and never matches its scope token", async () => {
+      await store.addDocuments(
+        "otherlib",
+        "2.0.0",
+        1,
+        createScrapeResult(
+          "Other Hooks",
+          "https://other.example.com/hooks",
+          "React hooks in another library.",
+          ["Hooks"],
+        ),
+      );
+
+      const results = await store.findByContent("testlib", "1.0.0", "React hooks", 10);
+      expect(results.map((r) => r.url)).toEqual(["https://example.com/react-hooks"]);
+      const other = await store.findByContent("otherlib", "2.0.0", "React hooks", 10);
+      expect(other.map((r) => r.url)).toEqual(["https://other.example.com/hooks"]);
+
+      // Every version's scope token is v<id>; a query for one is not a match.
+      for (const id of [1, 2, 3]) {
+        expect(await store.findByContent("testlib", "1.0.0", `v${id}`, 10)).toHaveLength(
+          0,
+        );
+      }
+    });
+
     it("should escape FTS queries safely", async () => {
       const maliciousQueries = [
         "'; DROP TABLE documents; --",

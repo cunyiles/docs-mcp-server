@@ -2684,7 +2684,6 @@ export class DocumentStore {
         return [];
       }
 
-      const ftsQuery = this.escapeFtsQuery(query);
       const normalizedVersion = normalizeVersionLabel(version);
 
       // Resolve library/version upfront so we can short-circuit missing versions
@@ -2699,6 +2698,9 @@ export class DocumentStore {
       }
 
       const { id: versionId, library_id: libraryId } = versionRow;
+      // The index intersects the query with the version's scope token, so the
+      // cost follows this version's matches, not those of every library.
+      const ftsQuery = `{scope} : "v${versionId}" AND {content title url path} : (${this.escapeFtsQuery(query)})`;
 
       // A provider that is rate limiting or down degrades search to keyword
       // ranking rather than failing it; collected pages stay findable.
@@ -2739,12 +2741,9 @@ export class DocumentStore {
           fts_scores AS MATERIALIZED (
             SELECT
               f.rowid as id,
-              bm25(documents_fts, 10.0, 1.0, 5.0, 1.0) as fts_score
+              bm25(documents_fts, 10.0, 1.0, 5.0, 1.0, 0.0) as fts_score
             FROM documents_fts f
-            JOIN documents d ON f.rowid = d.id
-            JOIN pages p ON d.page_id = p.id
-            WHERE p.version_id = ?
-              AND documents_fts MATCH ?
+            WHERE documents_fts MATCH ?
             ORDER BY fts_score
             LIMIT ?
           ),
@@ -2792,7 +2791,6 @@ export class DocumentStore {
           versionId,
           JSON.stringify(embedding),
           hybridCandidateLimit,
-          versionId,
           ftsQuery,
           hybridCandidateLimit,
         ) as RawSearchResult[];
@@ -2835,12 +2833,11 @@ export class DocumentStore {
             p.title as title,
             p.source_content_type as source_content_type,
             p.content_type as content_type,
-            bm25(documents_fts, 10.0, 1.0, 5.0, 1.0) as fts_score
+            bm25(documents_fts, 10.0, 1.0, 5.0, 1.0, 0.0) as fts_score
           FROM documents_fts f
           JOIN documents d ON f.rowid = d.id
           JOIN pages p ON d.page_id = p.id
-          WHERE p.version_id = ?
-            AND documents_fts MATCH ?
+          WHERE documents_fts MATCH ?
             AND NOT EXISTS (
               SELECT 1 FROM json_each(json_extract(d.metadata, '$.types')) je
               WHERE je.value = 'structural'
@@ -2849,7 +2846,7 @@ export class DocumentStore {
           LIMIT ?
         `);
 
-        const rawResults = stmt.all(versionId, ftsQuery, limit) as (RawSearchResult & {
+        const rawResults = stmt.all(ftsQuery, limit) as (RawSearchResult & {
           fts_score: number;
         })[];
 
