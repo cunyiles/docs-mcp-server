@@ -372,6 +372,17 @@ export class PipelineManager implements IPipeline {
     if (!existing || known.length === 0)
       return { ...options, entryPoints: [options.url] };
     if (known.some((entry) => same(entry, options.url))) {
+      // An unfinished run (interrupted, or failed part-way) is continued, not
+      // started over: what it collected stays and is not fetched again.
+      if (
+        existing.status !== VersionStatus.COMPLETED &&
+        this.store.hasPendingCrawl(existing.id)
+      ) {
+        logger.info(
+          `⏯️  Continuing the unfinished collection of ${library}@${version || "latest"}`,
+        );
+        return { ...options, entryPoints: known, resume: true };
+      }
       return { ...options, entryPoints: known };
     }
     const pages = await this.store.getPagesByVersionId(existing.id);

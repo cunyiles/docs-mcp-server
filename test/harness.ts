@@ -176,7 +176,7 @@ export interface Grounded {
   listTools(): ReturnType<Client["listTools"]>;
   stop(): Promise<void>;
   /** Stops and starts again on the same store, as a container restart would. */
-  restart(configure?: (config: AppConfig) => void): Promise<Grounded>;
+  restart(configure?: (config: AppConfig) => void, resume?: boolean): Promise<Grounded>;
 }
 
 /** Test defaults: FTS only, fake hosts allowed, fast retries. */
@@ -199,10 +199,12 @@ function testConfig(storeDir: string): AppConfig {
  * Starts Grounded in process with an MCP client over an in-memory transport.
  * @param configure Adjusts the configuration before start.
  * @param storeDir Existing store to open; a fresh temporary one by default.
+ * @param recoverJobs Continue interrupted jobs on start, like `--resume`.
  */
 export async function startGrounded(
   configure?: (config: AppConfig) => void,
   storeDir = mkdtempSync(path.join(tmpdir(), "grounded-e2e-")),
+  recoverJobs = true,
 ): Promise<Grounded> {
   const config = testConfig(storeDir);
   configure?.(config);
@@ -211,7 +213,7 @@ export async function startGrounded(
   const docService = new DocumentManagementService(eventBus, config);
   await docService.initialize();
   const pipeline = new PipelineManager(docService, eventBus, {
-    recoverJobs: true,
+    recoverJobs,
     appConfig: config,
   });
   await pipeline.start();
@@ -268,12 +270,16 @@ export async function startGrounded(
     instructions: () => client.getInstructions(),
     listTools: () => client.listTools(),
     stop,
-    restart: async (reconfigure) => {
+    restart: async (reconfigure, resume = true) => {
       await stop();
-      return startGrounded((next) => {
-        configure?.(next);
-        reconfigure?.(next);
-      }, storeDir);
+      return startGrounded(
+        (next) => {
+          configure?.(next);
+          reconfigure?.(next);
+        },
+        storeDir,
+        resume,
+      );
     },
   };
   return grounded;

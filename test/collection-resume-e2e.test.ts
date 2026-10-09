@@ -81,6 +81,46 @@ describe("Collection resume", () => {
     expect(search).toContain(`${ORIGIN}/docs/p8`);
   });
 
+  it("continues an unfinished collection when it is requested again", async () => {
+    const hung = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let firstRequest = true;
+    const routes: Record<string, FakeRoute> = {
+      "/docs/": html(
+        "Docs",
+        "Index.",
+        Array.from({ length: 6 }, (_, i) => `/docs/p${i}`),
+      ),
+    };
+    for (let i = 0; i < 6; i++) routes[`/docs/p${i}`] = html(`Page ${i}`, `Topic ${i}.`);
+    routes["/docs/p3"] = async () => {
+      if (firstRequest) {
+        firstRequest = false;
+        await hung;
+      }
+      return html("Page 3", "Topic 3.");
+    };
+    const site = fakeSite(ORIGIN, routes);
+    grounded = await startGrounded((config) => {
+      config.scraper.maxConcurrency = 1;
+    });
+    await grounded.call("scrape_docs", { url: `${ORIGIN}/docs/`, library: "resume-lib" });
+    await eventually(async () => site.hits("/docs/p3") === 1);
+
+    // A server started without job recovery marks the run failed.
+    grounded = await grounded.restart(undefined, false);
+    expect(await grounded.call("list_libraries")).toMatch(/failed/);
+
+    await grounded.scrape({ url: `${ORIGIN}/docs/`, library: "resume-lib" });
+    const status = await grounded.call("list_libraries");
+    expect(status).toContain("- resume-lib: 7 pages collected");
+    expect(status).toMatch(/last collection \S+ completed/);
+    for (const path of ["/docs/", "/docs/p0", "/docs/p1", "/docs/p2", "/docs/p4"]) {
+      expect(site.hits(path), path).toBe(1);
+    }
+  });
+
   it("starts over when the same library is collected again after it finished", async () => {
     const site = fakeSite(ORIGIN, {
       "/docs/": html("Docs", "Index.", ["/docs/a"]),
