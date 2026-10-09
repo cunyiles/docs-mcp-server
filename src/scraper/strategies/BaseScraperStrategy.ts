@@ -128,7 +128,14 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
   /** What this run observed about the site; returned by {@link scrape}. */
   protected stats: CollectionStats = {};
   /** Where this run persists its queue, when it is resumable. */
-  private frontier?: CrawlFrontier;
+  protected frontier?: CrawlFrontier;
+
+  /**
+   * Receives what the interrupted run remembered through the frontier, before
+   * a resumed run processes anything. Strategies that learn about a site at its
+   * entry pages restore that knowledge here.
+   */
+  protected onResumed(_memory: Record<string, unknown>): void {}
   /** Pages other witnesses list (sitemaps), queued beside the entry points. */
   protected witnessSeeds: QueueItem[] = [];
   /** Items of the current batch that failed; slows the next batch down. */
@@ -807,6 +814,7 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
       );
       for (const key of resumed.admitted) this.visited.add(key);
       queue.push(...resumed.pending);
+      this.onResumed(resumed.memory);
       if (resumed.base) this.canonicalBaseUrl = new URL(resumed.base);
       // ponytail: earlier pages count as indexed; matters only with a page limit.
       this.pageCount = resumed.admitted.length - resumed.pending.length;

@@ -141,8 +141,7 @@ export class PipelineWorker {
       // ponytail: variants are collapsed once the crawl ends, so the backlog may
       // embed a variant that is then removed; collapse per page if that costs.
       await this.store.collapseQueryVariants(library, version);
-      // A resumed run saw only part of the site; the first part's figures stand.
-      if (stats && job.versionId !== undefined && !scraperOptions.resume) {
+      if (stats && job.versionId !== undefined) {
         const { listedUrls, ...observed } = stats;
         await this.store.setCollectionStats(job.versionId, {
           ...observed,

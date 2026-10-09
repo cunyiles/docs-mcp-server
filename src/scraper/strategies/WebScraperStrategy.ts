@@ -78,6 +78,14 @@ type TwinPattern = (typeof TWIN_PATTERNS)[number];
 /** Pages in a row a rung may add nothing before a host stops getting it. */
 const RUNG_TRIALS = 2;
 
+/** A generator detection, kept in the frontier for a resumed run. */
+interface RememberedPlatform {
+  witness: string;
+  pages: string[];
+  /** Page identity and source URL pairs. */
+  sources: Array<[string, string]>;
+}
+
 /** What a crawl has learned about one host's fetch ladder. */
 interface HostMemory {
   /** The twin pattern the host uses, "none" when it soft-404s, "unknown" until seen. */
@@ -511,6 +519,17 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     }
   }
 
+  /** Restores what generator detection found before the run was interrupted. */
+  protected override onResumed(memory: Record<string, unknown>): void {
+    for (const [name, value] of Object.entries(memory)) {
+      if (!name.startsWith("platform:")) continue;
+      const remembered = value as RememberedPlatform;
+      this.platformLists.push([remembered.witness, remembered.pages]);
+      for (const [page, source] of remembered.sources)
+        this.platformSources.set(page, source);
+    }
+  }
+
   /**
    * Recognises the documentation generator behind an entry point from the HTML
    * the crawl fetched for it, remembers where the generator publishes page
@@ -554,6 +573,12 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     const pages = found.pages.filter((url) => this.shouldProcessUrl(url, options));
     logger.info(`🧭 ${item.url}: ${found.witness} lists ${pages.length} pages in scope`);
     this.platformLists.push([found.witness, pages]);
+    // An interrupted run resumes without visiting its entry pages again.
+    this.frontier?.remember(`platform:${item.url}`, {
+      witness: found.witness,
+      pages,
+      sources: [...this.platformSources],
+    } satisfies RememberedPlatform);
     return pages.map((url) => ({ url, depth: 1, fromWitness: true }));
   }
 
@@ -1340,10 +1365,7 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     this.pendingLlmsTxtProbe = null;
     this.witnessSeeds = [];
     this.linkWitness.clear();
-    // A resumed run admitted every witness's pages the first time round.
-    if (options.resume) {
-      return super.scrape(options, progressCallback, signal, frontier);
-    }
+    this.platformLists = [];
 
     this.pendingLlmsTxtProbe = await this.probeLlmsTxt(
       options.url,
@@ -1362,8 +1384,6 @@ export class WebScraperStrategy extends BaseScraperStrategy {
       depth: 1,
       fromWitness: true,
     }));
-    this.platformLists = [];
-
     const stats = await super.scrape(options, progressCallback, signal, frontier);
     const platformLists = this.platformLists;
 

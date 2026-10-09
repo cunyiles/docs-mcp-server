@@ -1590,6 +1590,11 @@ export class DocumentStore {
         for (const key of done) markDone.run(versionId, key);
       },
     );
+    // Rows whose key starts with "#" hold what the run remembered, not pages.
+    const MEMORY_PREFIX = "#memory:";
+    const upsert = this.db.prepare(
+      "INSERT INTO crawl_frontier (version_id, key, item, done) VALUES (?, ?, ?, 1) ON CONFLICT(version_id, key) DO UPDATE SET item = excluded.item",
+    );
     return {
       resume: () => {
         const rows = this.db
@@ -1597,24 +1602,30 @@ export class DocumentStore {
             "SELECT key, item, done FROM crawl_frontier WHERE version_id = ? ORDER BY id",
           )
           .all(versionId) as Array<{ key: string; item: string; done: number }>;
-        const items = rows.filter((row) => row.key !== BASE_KEY);
+        const items = rows.filter((row) => !row.key.startsWith("#"));
         if (!items.some((row) => row.done === 0)) return null;
         const base = rows.find((row) => row.key === BASE_KEY);
+        const memory: Record<string, unknown> = {};
+        for (const row of rows) {
+          if (row.key.startsWith(MEMORY_PREFIX)) {
+            memory[row.key.slice(MEMORY_PREFIX.length)] = JSON.parse(row.item);
+          }
+        }
         return {
           pending: items
             .filter((row) => row.done === 0)
             .map((row) => JSON.parse(row.item) as QueueItem),
           admitted: items.map((row) => row.key),
           base: base ? (JSON.parse(base.item) as QueueItem).url : undefined,
+          memory,
         };
       },
       commit: (admitted, done) => commit(admitted, done),
       setBase: (url) => {
-        this.db
-          .prepare(
-            "INSERT INTO crawl_frontier (version_id, key, item, done) VALUES (?, ?, ?, 1) ON CONFLICT(version_id, key) DO UPDATE SET item = excluded.item",
-          )
-          .run(versionId, BASE_KEY, JSON.stringify({ url, depth: 0 }));
+        upsert.run(versionId, BASE_KEY, JSON.stringify({ url, depth: 0 }));
+      },
+      remember: (name, value) => {
+        upsert.run(versionId, `${MEMORY_PREFIX}${name}`, JSON.stringify(value));
       },
     };
   }
@@ -1640,7 +1651,7 @@ export class DocumentStore {
     return (
       this.db
         .prepare(
-          "SELECT 1 FROM crawl_frontier WHERE version_id = ? AND done = 0 AND key != '#base' LIMIT 1",
+          "SELECT 1 FROM crawl_frontier WHERE version_id = ? AND done = 0 AND key NOT LIKE '#%' LIMIT 1",
         )
         .get(versionId) !== undefined
     );

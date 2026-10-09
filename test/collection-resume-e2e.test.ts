@@ -44,6 +44,24 @@ describe("Collection resume", () => {
     for (let i = 0; i < PAGES; i++) {
       routes[`/docs/p${i}`] = html(`Page ${i}`, `Subject ${i} in depth.`);
     }
+    routes["/sitemap.xml"] = {
+      body: `<urlset>${Array.from({ length: PAGES }, (_, i) => `<url><loc>${ORIGIN}/docs/p${i}</loc></url>`).join("")}</urlset>`,
+      type: "application/xml",
+    };
+    // The entry page names its generator, whose index the first run read.
+    const root = routes["/docs/"] as { body: string };
+    routes["/docs/"] = {
+      body: root.body.replace(
+        "<head>",
+        '<head><meta name="generator" content="mkdocs-1.6.0">',
+      ),
+    };
+    routes["/docs/search/search_index.json"] = {
+      body: JSON.stringify({
+        docs: Array.from({ length: PAGES }, (_, i) => ({ location: `p${i}` })),
+      }),
+      type: "application/json",
+    };
     // The server "dies" while this page is in flight.
     routes["/docs/p5"] = async () => {
       if (firstRequest) {
@@ -68,6 +86,9 @@ describe("Collection resume", () => {
     const status = await grounded.call("list_libraries");
     expect(status).toContain(`- resume-lib: ${PAGES + 1} pages collected`);
     expect(status).toMatch(/last collection \S+ completed/);
+    // A resumed run reports coverage like an uninterrupted one.
+    expect(status).toMatch(/witnesses links \d+, sitemap \d+/);
+    expect(status).toMatch(/mkdocs index \d+/);
     for (const path of ["/docs/", ...Array.from({ length: 5 }, (_, i) => `/docs/p${i}`)]) {
       expect(site.hits(path), path).toBe(1);
     }

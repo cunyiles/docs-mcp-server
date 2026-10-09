@@ -77,11 +77,19 @@ export interface CrawlFrontier {
    * key of every item it admitted, and the scope base it resolved. Null when
    * there is nothing to resume.
    */
-  resume(): { pending: QueueItem[]; admitted: string[]; base?: string } | null;
+  resume(): {
+    pending: QueueItem[];
+    admitted: string[];
+    base?: string;
+    /** What the run remembered with {@link remember}. */
+    memory: Record<string, unknown>;
+  } | null;
   /** Records newly admitted items and processed items in one step. */
   commit(admitted: Array<{ key: string; item: QueueItem }>, done: string[]): void;
   /** Remembers the scope base resolved from the root's redirects. */
   setBase(url: string): void;
+  /** Remembers something the run learned, for the run that resumes it. */
+  remember(name: string, value: unknown): void;
 }
 
 /**

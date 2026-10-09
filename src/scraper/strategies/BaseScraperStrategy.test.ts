@@ -2097,9 +2097,10 @@ describe("BaseScraperStrategy resume", () => {
         vi.fn(),
         undefined,
         {
-          resume: () => ({ pending, admitted }),
+          resume: () => ({ pending, admitted, memory: {} }),
           commit: () => {},
           setBase: () => {},
+          remember: () => {},
         },
       ),
     ).resolves.toBeDefined();
