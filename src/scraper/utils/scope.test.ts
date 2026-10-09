@@ -31,6 +31,16 @@ describe("computeBaseDirectory", () => {
     expect(computeBaseDirectory("/Index.HTML")).toBe("/");
   });
 
+  it("treats documentation generators' package index pages as their directory", () => {
+    expect(computeBaseDirectory("/reference/kotlin/androidx/room/package-summary")).toBe(
+      "/reference/kotlin/androidx/room/",
+    );
+    expect(computeBaseDirectory("/javadoc/com/example/package-summary.html")).toBe(
+      "/javadoc/com/example/",
+    );
+    expect(computeBaseDirectory("/javadoc/overview-summary.html")).toBe("/javadoc/");
+  });
+
   it("matches index file case-insensitively", () => {
     expect(computeBaseDirectory("/api/Index.HTML")).toBe("/api/");
     expect(computeBaseDirectory("/api/INDEX.html")).toBe("/api/");

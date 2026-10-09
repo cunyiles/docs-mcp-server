@@ -2,7 +2,12 @@
 import type { URL } from "node:url";
 import { extractPrimaryDomain } from "../../utils/url";
 
-const INDEX_FILE_PATTERN = /^index(\.[a-z0-9]+)?$/i;
+/**
+ * A page that indexes its directory: `index`, and the package and overview
+ * index pages javadoc-style generators write (`package-summary`,
+ * `overview-summary`). An entry point at one of them means the directory.
+ */
+const INDEX_FILE_PATTERN = /^(index|package-summary|overview-summary)(\.[a-z0-9]+)?$/i;
 
 /**
  * Extensions that mark a URL's last segment as a page rather than a directory.
