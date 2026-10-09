@@ -2068,6 +2068,45 @@ describe("BaseScraperStrategy empty-page reporting", () => {
   });
 });
 
+describe("BaseScraperStrategy resume", () => {
+  it("weighs a resumed run's failures against the pages it already processed", async () => {
+    const config = createTestConfig({ abortOnFailureRate: 0.5 });
+    const strategy = new TestScraperStrategy(config);
+    const admitted = Array.from({ length: 40 }, (_, i) => `https://example.com/p${i}`);
+    const pending = admitted.slice(30).map((url) => ({ url, depth: 1 }));
+    strategy.processItem.mockImplementation(async (item: QueueItem) => {
+      // The tail of a crawl often holds its broken links.
+      if (Number(item.url.slice(-1)) < 7) throw new Error("broken link");
+      return {
+        url: item.url,
+        content: { textContent: "ok", links: [], errors: [], chunks: [] },
+        links: [],
+        status: FetchStatus.SUCCESS,
+      };
+    });
+
+    await expect(
+      strategy.scrape(
+        {
+          url: "https://example.com/",
+          library: "t",
+          version: "",
+          ignoreErrors: true,
+          resume: true,
+        },
+        vi.fn(),
+        undefined,
+        {
+          resume: () => ({ pending, admitted }),
+          commit: () => {},
+          setBase: () => {},
+        },
+      ),
+    ).resolves.toBeDefined();
+    expect(strategy.processItem).toHaveBeenCalledTimes(10);
+  });
+});
+
 describe("BaseScraperStrategy adaptive concurrency", () => {
   it("halves the batch after failures and grows it back one item per clean batch", async () => {
     const config = createTestConfig({ abortOnFailureRate: 1 });

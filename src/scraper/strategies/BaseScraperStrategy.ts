@@ -811,6 +811,9 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
       // ponytail: earlier pages count as indexed; matters only with a page limit.
       this.pageCount = resumed.admitted.length - resumed.pending.length;
       this.pagesIndexed = this.pageCount;
+      // The failure rate is a property of the whole run: judged on the resumed
+      // tail alone, a few broken links would abort a nearly finished collection.
+      this.completedChildPageAttempts = this.pageCount;
     } else if (isRefreshMode) {
       logger.debug(
         `Starting refresh mode with ${initialQueue.length} pre-populated pages`,
