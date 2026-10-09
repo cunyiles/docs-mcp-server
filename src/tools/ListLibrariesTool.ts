@@ -154,8 +154,9 @@ export class ListLibrariesTool {
     this.docService = docService;
   }
 
-  async execute(_options?: Record<string, never>): Promise<ListLibrariesResult> {
-    const rawLibraries = await this.docService.listLibraries();
+  /** Every library, or only `options.library`. */
+  async execute(options?: { library?: string }): Promise<ListLibrariesResult> {
+    const rawLibraries = await this.docService.listLibraries(options?.library);
 
     const libraries: LibraryInfo[] = rawLibraries.map(({ library, versions }) => ({
       name: library,

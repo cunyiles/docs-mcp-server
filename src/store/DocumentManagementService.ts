@@ -50,8 +50,9 @@ import type {
 } from "./types";
 import { normalizeVersionLabel, normalizeVersionRef } from "./types";
 
-/** A completed collection with fewer pages than this is flagged as suspect. */
+/** A completed collection with fewer pages and chunks than these is flagged as suspect. */
 const SMALL_COLLECTION_PAGES = 5;
+const SMALL_COLLECTION_CHUNKS = 20;
 
 /**
  * Provides semantic search capabilities across different versions of library documentation.
@@ -239,8 +240,8 @@ export class DocumentManagementService {
    * Returns enriched library summaries including version status/progress and counts.
    * Uses existing store APIs; keeps DB details encapsulated.
    */
-  async listLibraries(): Promise<LibrarySummary[]> {
-    const libMap = await this.store.queryLibraryVersions();
+  async listLibraries(library?: string): Promise<LibrarySummary[]> {
+    const libMap = await this.store.queryLibraryVersions(library);
     const embeddingsActive = this.store.getActiveEmbeddingConfig() !== null;
     const run = (
       at: string | null,
@@ -281,11 +282,14 @@ export class DocumentManagementService {
             ),
             lastRefresh: run(v.lastRefreshAt, v.lastRefreshStatus, v.lastRefreshError),
             collectionStats,
-            // ponytail: fixed threshold, waived when the site's own lists
-            // (sitemap, generator index) confirm it is that small.
+            // Small means little content, not few pages: one OpenAPI contract
+            // or a long single-page reference is a page holding many chunks.
+            // Waived when the site's own lists (sitemap, generator index)
+            // confirm the library is that small.
             smallCollection:
               v.status === "completed" &&
               v.pagesCollected < SMALL_COLLECTION_PAGES &&
+              v.documentCount < SMALL_COLLECTION_CHUNKS &&
               !(
                 collectionStats?.listed &&
                 (collectionStats.listedCollected ?? 0) >= collectionStats.listed

@@ -52,7 +52,9 @@ export class SearchTool {
     version: string | null | undefined,
   ): Promise<string | undefined> {
     try {
-      const { libraries } = await new ListLibrariesTool(this.docService).execute();
+      const { libraries } = await new ListLibrariesTool(this.docService).execute({
+        library,
+      });
       const target = normalizeLibraryName(library);
       const info = libraries
         .find((lib) => lib.name === target)

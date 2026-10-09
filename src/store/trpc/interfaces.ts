@@ -28,7 +28,8 @@ export interface IDocumentManagement {
   shutdown(): Promise<void>;
 
   // Library/version introspection used by tools/UI
-  listLibraries(): Promise<LibrarySummary[]>;
+  /** Every library, or only `library` when given. */
+  listLibraries(library?: string): Promise<LibrarySummary[]>;
   validateLibraryExists(library: string): Promise<void>;
   findBestVersion(library: string, targetVersion?: string): Promise<FindVersionResult>;
 

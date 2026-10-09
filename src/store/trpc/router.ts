@@ -39,9 +39,15 @@ export function createDataRouter(trpc: unknown) {
   return tt.router({
     ping: tt.procedure.query(async () => ({ status: "ok", ts: Date.now() })),
 
-    listLibraries: tt.procedure.query(async ({ ctx }: { ctx: DataTrpcContext }) => {
-      return await ctx.docService.listLibraries(); // LibrarySummary[]
-    }),
+    listLibraries: tt.procedure.input(z.object({ library: nonEmpty }).optional()).query(
+      async ({
+        ctx,
+        input,
+      }: {
+        ctx: DataTrpcContext;
+        input: { library: string } | undefined;
+      }) => ctx.docService.listLibraries(input?.library), // LibrarySummary[]
+    ),
 
     findBestVersion: tt.procedure
       .input(z.object({ library: nonEmpty, targetVersion: z.string().optional() }))

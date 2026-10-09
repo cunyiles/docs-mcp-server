@@ -62,8 +62,10 @@ export class DocumentManagementClient implements IDocumentManagement {
     // no-op for HTTP client
   }
 
-  async listLibraries(): Promise<LibrarySummary[]> {
-    return this.client.listLibraries.query();
+  async listLibraries(library?: string): Promise<LibrarySummary[]> {
+    return this.client.listLibraries.query(
+      library === undefined ? undefined : { library },
+    );
   }
 
   async validateLibraryExists(library: string): Promise<void> {

@@ -208,7 +208,7 @@ export class DocumentStore {
     deletePages: Database.Statement<[string, string]>;
     queryVersions: Database.Statement<[string]>;
     checkExists: Database.Statement<[string, string]>;
-    queryLibraryVersions: Database.Statement<[]>;
+    queryLibraryVersions: Database.Statement<{ library: string | null }>;
     getChildChunks: Database.Statement<
       [string, string, string, number, string, bigint, number]
     >;
@@ -439,9 +439,20 @@ export class DocumentStore {
       // Counts come from indexes only: reading `documents.embedding` itself to
       // tell embedded chunks apart would load every vector, which made a
       // listing of a large store take minutes and block the server meanwhile.
-      queryLibraryVersions: this.db.prepare<[]>(
-        `WITH docs AS (
-          SELECT page_id, COUNT(*) AS n FROM documents GROUP BY page_id
+      // An optional library name narrows every step, so asking about one
+      // library costs what that library holds, not what the store holds.
+      queryLibraryVersions: this.db.prepare<{ library: string | null }>(
+        `WITH scoped_versions AS (
+          SELECT v.id FROM versions v JOIN libraries l ON l.id = v.library_id
+          WHERE @library IS NULL OR l.name = @library
+        ),
+        scoped_pages AS (
+          SELECT id, version_id, created_at FROM pages
+          WHERE version_id IN (SELECT id FROM scoped_versions)
+        ),
+        docs AS (
+          SELECT page_id, COUNT(*) AS n FROM documents
+          WHERE page_id IN (SELECT id FROM scoped_pages) GROUP BY page_id
         ),
         pending AS (
           SELECT DISTINCT page_id FROM documents INDEXED BY idx_documents_embedding_pending
@@ -454,7 +465,7 @@ export class DocumentStore {
             SUM(COALESCE(docs.n, 0)) AS documentCount,
             COUNT(docs.page_id) AS pagesCollected,
             COUNT(pending.page_id) AS pagesPending
-          FROM pages p
+          FROM scoped_pages p
           LEFT JOIN docs ON docs.page_id = p.id
           LEFT JOIN pending ON pending.page_id = p.id
           GROUP BY p.version_id
@@ -489,6 +500,7 @@ export class DocumentStore {
         FROM versions v
         JOIN libraries l ON v.library_id = l.id
         LEFT JOIN per_version pv ON pv.version_id = v.id
+        WHERE v.id IN (SELECT id FROM scoped_versions)
         ORDER BY l.name, version`,
       ),
       getChildChunks: this.db.prepare<
@@ -1913,10 +1925,15 @@ export class DocumentStore {
 
   /**
    * Retrieves a mapping of all libraries to their available versions with details.
+   * @param library Only this library, when given.
    */
-  async queryLibraryVersions(): Promise<Map<string, Array<LibraryVersionSummary>>> {
+  async queryLibraryVersions(
+    library?: string,
+  ): Promise<Map<string, Array<LibraryVersionSummary>>> {
     try {
-      const rows = this.statements.queryLibraryVersions.all() as DbLibraryVersion[];
+      const rows = this.statements.queryLibraryVersions.all({
+        library: library === undefined ? null : normalizeLibraryName(library),
+      }) as DbLibraryVersion[];
       const libraryMap = new Map<string, Array<LibraryVersionSummary>>();
 
       for (const row of rows) {

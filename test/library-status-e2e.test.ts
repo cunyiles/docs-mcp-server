@@ -111,6 +111,19 @@ describe("Library status and coverage", () => {
     expect(noteLines[0]).toMatch(/^Note: status-lib: last refresh failed on \d{4}-\d{2}-\d{2}/);
   });
 
+  it("does not flag a single page that holds a lot of documentation", async () => {
+    const sections = Array.from(
+      { length: 30 },
+      (_, i) => `## Operation ${i}\n\n${`Detail about operation ${i}. `.repeat(80)}\n`,
+    ).join("\n");
+    fakeSite(ORIGIN, { "/reference": md(`# Reference\n\n${sections}`) });
+    grounded = await startGrounded();
+    await grounded.scrape({ url: `${ORIGIN}/reference`, library: "status-lib" });
+    const line = await statusLine();
+    expect(line).toContain("1 pages collected");
+    expect(line).not.toContain("suspiciously small");
+  });
+
   it("flags a library collected from a single page as suspiciously small", async () => {
     fakeSite(ORIGIN, { "/single": md("# Only page\n\nNothing links anywhere.\n") });
     grounded = await startGrounded();
