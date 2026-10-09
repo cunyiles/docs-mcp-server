@@ -436,8 +436,30 @@ export class DocumentStore {
          LIMIT 1`,
       ),
       // Library/version aggregation including versions without documents and status/progress fields
+      // Counts come from indexes only: reading `documents.embedding` itself to
+      // tell embedded chunks apart would load every vector, which made a
+      // listing of a large store take minutes and block the server meanwhile.
       queryLibraryVersions: this.db.prepare<[]>(
-        `SELECT
+        `WITH docs AS (
+          SELECT page_id, COUNT(*) AS n FROM documents GROUP BY page_id
+        ),
+        pending AS (
+          SELECT DISTINCT page_id FROM documents INDEXED BY idx_documents_embedding_pending
+          WHERE embedding IS NULL
+        ),
+        per_version AS (
+          SELECT p.version_id,
+            COUNT(*) AS urls,
+            MIN(p.created_at) AS firstPage,
+            SUM(COALESCE(docs.n, 0)) AS documentCount,
+            COUNT(docs.page_id) AS pagesCollected,
+            COUNT(pending.page_id) AS pagesPending
+          FROM pages p
+          LEFT JOIN docs ON docs.page_id = p.id
+          LEFT JOIN pending ON pending.page_id = p.id
+          GROUP BY p.version_id
+        )
+        SELECT
           l.name as library,
           COALESCE(v.name, '') as version,
           v.id as versionId,
@@ -452,11 +474,11 @@ export class DocumentStore {
           -- a run, including refreshes) rather than MIN(p.created_at), which is
           -- the *first*-index time and never moves on refresh. Fall back to the
           -- oldest page for versions that predate status tracking.
-          COALESCE(v.updated_at, MIN(p.created_at)) as indexedAt,
-          COUNT(d.id) as documentCount,
-          COUNT(DISTINCT p.url) as uniqueUrlCount,
-          COUNT(DISTINCT d.page_id) as pagesCollected,
-          COUNT(DISTINCT d.page_id) - COUNT(DISTINCT CASE WHEN d.embedding IS NULL THEN d.page_id END) as pagesEmbedded,
+          COALESCE(v.updated_at, pv.firstPage) as indexedAt,
+          COALESCE(pv.documentCount, 0) as documentCount,
+          COALESCE(pv.urls, 0) as uniqueUrlCount,
+          COALESCE(pv.pagesCollected, 0) as pagesCollected,
+          COALESCE(pv.pagesCollected - pv.pagesPending, 0) as pagesEmbedded,
           v.last_collection_at as lastCollectionAt,
           v.last_collection_status as lastCollectionStatus,
           v.last_collection_error as lastCollectionError,
@@ -466,9 +488,7 @@ export class DocumentStore {
           v.collection_stats as collectionStats
         FROM versions v
         JOIN libraries l ON v.library_id = l.id
-        LEFT JOIN pages p ON p.version_id = v.id
-        LEFT JOIN documents d ON d.page_id = p.id
-        GROUP BY v.id
+        LEFT JOIN per_version pv ON pv.version_id = v.id
         ORDER BY l.name, version`,
       ),
       getChildChunks: this.db.prepare<
