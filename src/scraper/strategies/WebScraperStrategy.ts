@@ -25,11 +25,13 @@ import { FetchStatus, type RawContent } from "../fetcher/types";
 import { HtmlCheerioParserMiddleware } from "../middleware/HtmlCheerioParserMiddleware";
 import { HtmlLinkExtractorMiddleware } from "../middleware/HtmlLinkExtractorMiddleware";
 import type { MiddlewareContext } from "../middleware/types";
+import { ConversionPool } from "../pipelines/ConversionPool";
 import {
   createMimeTypeCapabilityPredicate,
   type MimeTypeCapabilityPredicate,
 } from "../pipelines/capability";
 import { PipelineFactory } from "../pipelines/PipelineFactory";
+import { runPipelines } from "../pipelines/runPipelines";
 import type { ContentPipeline, PipelineResult } from "../pipelines/types";
 import { type DetectedPlatform, detectPlatform } from "../platforms";
 import type {
@@ -39,6 +41,7 @@ import type {
   ScraperOptions,
   ScraperProgressEvent,
 } from "../types";
+import { ScrapeMode } from "../types";
 import { convertToString } from "../utils/buffer";
 import { isLlmsTxtUrl, type LlmsTxtResult, parseLlmsTxt } from "../utils/llmsTxtParser";
 import { needsBrowserRendering } from "../utils/renderSignals";
@@ -206,24 +209,27 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     };
   }
 
-  /** Runs the first pipeline that can read the content; undefined when none can. */
+  /**
+   * Runs the first pipeline that can read the content; undefined when none can.
+   *
+   * Conversion runs in a worker thread when the build has one, except for a
+   * JavaScript shell, whose rendering needs the browser this thread owns.
+   */
   private async runPipelines(
     rawContent: RawContent,
     source: string,
     options: ScraperOptions,
   ): Promise<PipelineResult | undefined> {
-    const contentBuffer = Buffer.isBuffer(rawContent.content)
-      ? rawContent.content
-      : Buffer.from(rawContent.content);
-    for (const pipeline of this.pipelines) {
-      if (pipeline.canProcess(rawContent.mimeType || "text/plain", contentBuffer)) {
-        logger.debug(
-          `Selected ${pipeline.constructor.name} for content type "${rawContent.mimeType}" (${source})`,
-        );
-        return pipeline.process({ ...rawContent, source }, options, this.fetcher);
-      }
+    const pool = ConversionPool.shared();
+    const needsBrowser =
+      MimeTypeUtils.isHtml(rawContent.mimeType) &&
+      options.scrapeMode !== ScrapeMode.Fetch &&
+      (options.scrapeMode === ScrapeMode.Playwright ||
+        needsBrowserRendering(convertToString(rawContent.content, rawContent.charset)));
+    if (pool && !needsBrowser) {
+      return pool.run(this.config, rawContent, source, options);
     }
-    return undefined;
+    return runPipelines(this.pipelines, rawContent, source, options, this.fetcher);
   }
 
   /**

@@ -44,6 +44,8 @@ export default defineConfig({
       // Define entry points using path.resolve for robustness
       entry: {
         index: path.resolve(__dirname, 'src/index.ts'),
+        // Page conversion runs in worker threads that load this entry.
+        conversionWorker: path.resolve(__dirname, 'src/scraper/pipelines/conversionWorker.ts'),
       },
       formats: ['es'], // Output ESM format only
       // Output filename will be based on the entry key (index.js)
