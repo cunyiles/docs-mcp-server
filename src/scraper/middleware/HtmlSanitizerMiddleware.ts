@@ -298,7 +298,25 @@ export class HtmlSanitizerMiddleware implements ContentProcessorMiddleware {
         `Removing elements matching ${selectorsToRemove.length} selectors for ${context.source}`,
       );
       let removedCount = 0;
-      for (const selector of selectorsToRemove) {
+      // One combined query walks the document once instead of once per
+      // selector; on large reference pages the per-selector walks dominated
+      // collection CPU. A list holding an invalid selector falls back to one
+      // query per selector, so the valid ones still apply.
+      let combined: ReturnType<typeof $> | null = null;
+      try {
+        combined = $(selectorsToRemove.join(", "));
+      } catch {
+        combined = null;
+      }
+      if (combined) {
+        const filteredElements = combined.filter(function () {
+          const tagName = $(this).prop("tagName")?.toLowerCase();
+          return tagName !== "html" && tagName !== "body";
+        });
+        removedCount = filteredElements.length;
+        filteredElements.remove();
+      }
+      for (const selector of combined ? [] : selectorsToRemove) {
         try {
           const elements = $(selector); // Use Cheerio selector
           // Filter out html and body tags to prevent removing them or their entire content
