@@ -16,7 +16,9 @@ export function getCliCommand(): { cmd: string; args: string[] } {
     return { cmd: "node", args: [distEntry] };
   }
 
-  // Fallback to vite-node
+  // Fallback to vite-node, run in this process's node rather than through npx,
+  // so signals sent to the spawned process reach the server itself.
   const srcEntry = path.join(projectRoot, "src", "index.ts");
-  return { cmd: "npx", args: ["vite-node", srcEntry] };
+  const viteNode = path.join(projectRoot, "node_modules", "vite-node", "dist", "cli.mjs");
+  return { cmd: process.execPath, args: [viteNode, srcEntry] };
 }
