@@ -11,6 +11,22 @@ RUN apt-get update \
   g++ \
   && rm -rf /var/lib/apt/lists/*
 
+# Runtime dependencies, from the package files alone: with a build cache the
+# resulting layer only changes when the lockfile does, so pulling a new image
+# fetches the application code and not the whole dependency tree again.
+FROM base AS deps
+
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+# Drop the musl-linked native builds. npm selects platform packages by `os`
+# and `cpu`; it only filters on `libc` when the lockfile records that field,
+# which npm 10 does not write. Both the glibc and musl variants therefore get
+# installed, and on this Debian base the musl ones can never load. Removing
+# them keeps ~190 MB of dead binaries (over half of it `@xberg-io/xberg`) out
+# of the runtime image.
+RUN find node_modules -maxdepth 3 -type d -name '*-linux-*-musl' -prune -exec rm -rf {} +
+
 # Build stage
 FROM base AS builder
 
@@ -30,18 +46,6 @@ COPY . .
 # Build application
 RUN npm run build
 
-# Remove build-only packages before copying dependencies into the runtime image.
-RUN npm prune --omit=dev --ignore-scripts
-
-# Drop the musl-linked native builds. npm selects platform packages by `os`
-# and `cpu`; it only filters on `libc` when the lockfile records that field,
-# which npm 10 does not write. Both the glibc and musl variants therefore get
-# installed, and on this Debian base the musl ones can never load. Run this
-# after npm prune because prune can restore optional packages from the lockfile.
-# Removing them keeps ~190 MB of dead binaries (over half of it `@xberg-io/xberg`)
-# out of the runtime image.
-RUN find node_modules -maxdepth 3 -type d -name '*-linux-*-musl' -prune -exec rm -rf {} +
-
 # Production stage
 FROM base AS production
 
@@ -60,7 +64,7 @@ COPY package*.json .
 COPY db db
 
 # Copy built files from builder
-COPY --from=builder /app/node_modules ./node_modules
+COPY --from=deps /app/node_modules ./node_modules
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/dist ./dist
 

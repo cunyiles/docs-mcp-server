@@ -63,6 +63,10 @@ jobs:
           context: .
           load: true
           platforms: linux/amd64
+          # Unchanged stages are reused byte for byte, so hosts pulling the
+          # next image only fetch the layers that actually changed.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           tags: ghcr.io/${{ github.repository }}:${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
