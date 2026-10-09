@@ -23,6 +23,19 @@ describe("sitemap", () => {
     });
   });
 
+  it("keeps only the default-language entry of a page listed per language", () => {
+    const alt = (lang: string, href: string) =>
+      `<xhtml:link rel="alternate" hreflang="${lang}" href="${href}" />`;
+    const page = "https://a.test/guide";
+    const alternates = [
+      alt("en", page),
+      alt("x-default", page),
+      alt("de", `${page}?hl=de`),
+    ].join("");
+    const xml = `<urlset><url><loc>${page}</loc>${alternates}</url><url><loc>${page}?hl=de</loc>${alternates}</url><url><loc>https://a.test/solo</loc></url></urlset>`;
+    expect(parseSitemap(xml).urls).toEqual([page, "https://a.test/solo"]);
+  });
+
   it("ignores bodies that are not sitemaps", () => {
     expect(parseSitemap("<html><loc>x</loc></html>")).toEqual({ sitemaps: [], urls: [] });
   });

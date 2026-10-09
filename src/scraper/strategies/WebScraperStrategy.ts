@@ -42,7 +42,7 @@ import type {
 import { convertToString } from "../utils/buffer";
 import { isLlmsTxtUrl, type LlmsTxtResult, parseLlmsTxt } from "../utils/llmsTxtParser";
 import { needsBrowserRendering } from "../utils/renderSignals";
-import { isFileLikePath, isPathDescendant } from "../utils/scope";
+import { computeBaseDirectory, isFileLikePath, isPathDescendant } from "../utils/scope";
 import { type ParsedSitemap, parseSitemap, sitemapsFromRobots } from "../utils/sitemap";
 import { BaseScraperStrategy, type ProcessItemResult } from "./BaseScraperStrategy";
 import { LocalFileStrategy } from "./LocalFileStrategy";
@@ -62,7 +62,7 @@ const MAX_SITEMAP_FILES = 500;
  */
 const SITEMAP_CACHE = new Map<
   string,
-  { at: number; parsed: ParsedSitemap | undefined }
+  { at: number; parsed: Promise<ParsedSitemap | undefined> }
 >();
 const SITEMAP_CACHE_MS = 6 * 60 * 60 * 1000;
 
@@ -587,6 +587,13 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     let found = false;
     // Read a level of the sitemap tree at a time, its files in parallel: large
     // sites serve each child slowly, and a crawl should not wait for them in turn.
+    const prefixes =
+      (options.scope ?? "subpages") === "subpages"
+        ? [options.url, ...(options.entryPoints ?? [])].map((entry) => {
+            const { origin, pathname } = new URL(entry);
+            return `${origin}${computeBaseDirectory(pathname).replace(/\/$/, "")}`;
+          })
+        : null;
     let level = candidates;
     while (level.length > 0 && seen.size < MAX_SITEMAP_FILES) {
       const batch = [...new Set(level)]
@@ -603,6 +610,9 @@ export class WebScraperStrategy extends BaseScraperStrategy {
         found = true;
         level.push(...parsed.sitemaps);
         for (const url of parsed.urls) {
+          // A whole-site sitemap lists far more than the scope: a string test
+          // rules most of it out before URLs are parsed.
+          if (prefixes && !prefixes.some((prefix) => url.startsWith(prefix))) continue;
           if (this.shouldProcessUrl(url, options)) listed.add(url);
         }
       }
@@ -621,9 +631,12 @@ export class WebScraperStrategy extends BaseScraperStrategy {
   ): Promise<ParsedSitemap | undefined> {
     const cached = SITEMAP_CACHE.get(url);
     if (cached && Date.now() - cached.at < SITEMAP_CACHE_MS) return cached.parsed;
-    const raw = await this.fetchWitness(url, options, signal);
-    const parsed = raw ? parseSitemap(raw.content) : undefined;
+    // Cached while in flight too, so crawls starting together read it once.
+    const parsed = this.fetchWitness(url, options, signal).then((raw) =>
+      raw ? parseSitemap(raw.content) : undefined,
+    );
     SITEMAP_CACHE.set(url, { at: Date.now(), parsed });
+    parsed.catch(() => SITEMAP_CACHE.delete(url));
     return parsed;
   }
 

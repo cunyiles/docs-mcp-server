@@ -37,10 +37,26 @@ export function parseSitemap(body: Buffer | string): ParsedSitemap {
     text = body.toString();
   }
   if (!/<(urlset|sitemapindex)\b/i.test(text)) return { sitemaps: [], urls: [] };
-  const locs = [...text.matchAll(LOC)].map((match) => decodeXml(match[1]));
-  return /<sitemapindex\b/i.test(text)
-    ? { sitemaps: locs, urls: [] }
-    : { sitemaps: [], urls: locs };
+  if (/<sitemapindex\b/i.test(text)) {
+    return { sitemaps: [...text.matchAll(LOC)].map((m) => decodeXml(m[1])), urls: [] };
+  }
+  // A page published in several languages is listed once per language, each
+  // entry naming the others as `hreflang` alternates. Only the entry that is
+  // its own default (`x-default`) is the page; the rest are translations.
+  const urls: string[] = [];
+  for (const block of text.split(/<\/url>/i)) {
+    LOC.lastIndex = 0;
+    const loc = LOC.exec(block);
+    if (!loc) continue;
+    const url = decodeXml(loc[1]);
+    const fallback =
+      /hreflang=["']x-default["'][^>]*href=["']([^"']+)["']|href=["']([^"']+)["'][^>]*hreflang=["']x-default["']/i.exec(
+        block,
+      );
+    const defaultUrl = fallback ? decodeXml(fallback[1] ?? fallback[2]) : undefined;
+    if (defaultUrl === undefined || defaultUrl === url) urls.push(url);
+  }
+  return { sitemaps: [], urls };
 }
 
 /** Sitemap URLs a robots.txt declares. */
